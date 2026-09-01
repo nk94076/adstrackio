@@ -1,0 +1,424 @@
+// AdstrackIO — Phase 1 foundation data model.
+//
+// Design notes:
+// - Entities marked "foundation only" exist so later phases can build on a
+//   stable schema without a breaking migration. They intentionally do not
+//   carry behavior that isn't implemented yet (e.g. no real bot detection
+//   engine, no real redirect resolution, no DNS verification).
+// - Click/BotEvent are event-oriented and privacy-conscious: raw IP
+//   addresses are never stored, only a one-way hash.
+// - See docs/architecture/data-model.md for the full rationale.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum OrganizationRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum DomainVerificationStatus {
+  PENDING
+  VERIFIED
+  FAILED
+}
+
+enum DomainSslStatus {
+  NOT_CONFIGURED
+  PENDING
+  ACTIVE
+  FAILED
+}
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+enum TrackingLinkStatus {
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+enum ConversionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REVERSED
+}
+
+enum BotClassification {
+  UNKNOWN
+  HUMAN
+  SUSPICIOUS
+  BOT
+}
+
+enum DeviceType {
+  UNKNOWN
+  DESKTOP
+  MOBILE
+  TABLET
+  BOT
+  OTHER
+}
+
+enum ReferralConfigurationType {
+  NORMAL
+  HIDE
+  CUSTOM_PARTNER_ATTRIBUTION
+}
+
+enum ReferralConfigurationStatus {
+  INACTIVE
+  ACTIVE
+}
+
+enum ReferralProofReviewStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+}
+
+// ---------------------------------------------------------------------------
+// Identity & organizations
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships                OrganizationMember[]
+  auditLogs                  AuditLog[]             @relation("AuditLogActor")
+  referralConfigurations     ReferralConfiguration[] @relation("ReferralConfigurationCreatedBy")
+  referralProofsSubmitted    ReferralProof[]         @relation("ReferralProofSubmittedBy")
+  referralProofsReviewed     ReferralProof[]         @relation("ReferralProofReviewedBy")
+
+  @@map("users")
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members                OrganizationMember[]
+  trackingDomains        TrackingDomain[]
+  campaigns              Campaign[]
+  destinations           Destination[]
+  clicks                 Click[]
+  conversions            Conversion[]
+  referralConfigurations ReferralConfiguration[]
+  auditLogs              AuditLog[]
+
+  @@map("organizations")
+}
+
+/// Join model between User and Organization. Modelled as its own table (not
+/// an implicit m2m) so a membership can carry a role today and additional
+/// per-membership attributes later without a schema rewrite.
+model OrganizationMember {
+  id             String           @id @default(cuid())
+  userId         String
+  organizationId String
+  role           OrganizationRole @default(MEMBER)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+  @@map("organization_members")
+}
+
+// ---------------------------------------------------------------------------
+// Tracking domain foundation
+// ---------------------------------------------------------------------------
+
+model TrackingDomain {
+  id                 String                    @id @default(cuid())
+  organizationId     String
+  hostname           String                    @unique
+  verificationStatus DomainVerificationStatus  @default(PENDING)
+  sslStatus          DomainSslStatus           @default(NOT_CONFIGURED)
+  isActive           Boolean                   @default(true)
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaigns     Campaign[]
+  trackingLinks TrackingLink[]
+
+  @@index([organizationId])
+  @@map("tracking_domains")
+}
+
+// ---------------------------------------------------------------------------
+// Campaign / destination / tracking link foundation
+// ---------------------------------------------------------------------------
+
+/// The business target a campaign or tracking link ultimately points to.
+/// Kept distinct from TrackingLink (the tracked identifier) and Click (the
+/// individual event) so analytics can evolve independently of routing.
+model Destination {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  url            String
+  isActive       Boolean  @default(true)
+  metadata       Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaigns     Campaign[]
+  trackingLinks TrackingLink[]
+
+  @@index([organizationId])
+  @@map("destinations")
+}
+
+model Campaign {
+  id               String         @id @default(cuid())
+  organizationId   String
+  name             String
+  status           CampaignStatus @default(DRAFT)
+  trackingDomainId String?
+  destinationId    String?
+  budgetAmount     Decimal?       @db.Decimal(12, 2)
+  budgetCurrency   String?        @db.VarChar(3)
+  startDate        DateTime?
+  endDate          DateTime?
+  metadata         Json?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  trackingDomain TrackingDomain? @relation(fields: [trackingDomainId], references: [id])
+  destination    Destination?    @relation(fields: [destinationId], references: [id])
+
+  trackingLinks           TrackingLink[]
+  clicks                  Click[]
+  conversions              Conversion[]
+  referralConfigurations   ReferralConfiguration[]
+
+  @@index([organizationId])
+  @@map("campaigns")
+}
+
+/// Represents a trackable link/URL identifier. Real click resolution
+/// (matching an inbound request to a TrackingLink and issuing a redirect)
+/// is implemented by the future TrackingResolver — see
+/// packages/shared/src/tracking-resolver.ts for the interface boundary.
+model TrackingLink {
+  id               String              @id @default(cuid())
+  campaignId       String
+  trackingDomainId String
+  destinationId    String
+  slug             String
+  status           TrackingLinkStatus  @default(ACTIVE)
+  metadata         Json?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  campaign       Campaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  trackingDomain TrackingDomain @relation(fields: [trackingDomainId], references: [id], onDelete: Cascade)
+  destination    Destination    @relation(fields: [destinationId], references: [id])
+
+  clicks      Click[]
+  conversions Conversion[]
+
+  @@unique([trackingDomainId, slug])
+  @@index([campaignId])
+  @@map("tracking_links")
+}
+
+// ---------------------------------------------------------------------------
+// Event data: clicks, conversions, bot events
+// ---------------------------------------------------------------------------
+
+/// Append-only click event. Privacy-conscious by design: no raw IP address
+/// or other directly-identifying fields are stored. botClassification/
+/// botScore are a denormalized snapshot of the latest related BotEvent to
+/// keep read queries fast; BotEvent remains the source of truth.
+model Click {
+  id             String   @id @default(cuid())
+  organizationId String
+  campaignId     String
+  trackingLinkId String
+  occurredAt     DateTime @default(now())
+
+  ipHash    String?
+  userAgent String? @db.Text
+  referrer  String? @db.Text
+
+  country String?
+  region  String?
+  city    String?
+
+  deviceType DeviceType? @default(UNKNOWN)
+  browser    String?
+  os         String?
+
+  botClassification BotClassification? @default(UNKNOWN)
+  botScore           Float?
+
+  requestMetadata Json?
+
+  createdAt DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign     Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  trackingLink TrackingLink @relation(fields: [trackingLinkId], references: [id], onDelete: Cascade)
+
+  conversions Conversion[]
+  botEvents   BotEvent[]
+
+  @@index([organizationId, occurredAt])
+  @@index([trackingLinkId])
+  @@index([campaignId])
+  @@map("clicks")
+}
+
+model Conversion {
+  id             String           @id @default(cuid())
+  organizationId String
+  campaignId     String
+  trackingLinkId String?
+  clickId        String?
+  status         ConversionStatus @default(PENDING)
+  payoutAmount   Decimal?         @db.Decimal(12, 2)
+  payoutCurrency String?          @db.VarChar(3)
+  occurredAt     DateTime         @default(now())
+  metadata       Json?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign     Campaign      @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  trackingLink TrackingLink? @relation(fields: [trackingLinkId], references: [id])
+  click        Click?        @relation(fields: [clickId], references: [id])
+
+  @@index([organizationId, occurredAt])
+  @@index([campaignId])
+  @@map("conversions")
+}
+
+/// Foundation model only. Classification/scoring is expected to be produced
+/// by the product's existing/planned bot-detection engine and written here
+/// through a single ingestion interface — see
+/// packages/shared/src/bot-detection.ts. No detection logic lives in Phase 1.
+model BotEvent {
+  id              String             @id @default(cuid())
+  clickId         String
+  classification  BotClassification
+  score           Float?
+  reasonCodes     String[]
+  detectionSource String
+  occurredAt      DateTime           @default(now())
+  metadata        Json?
+  createdAt       DateTime           @default(now())
+
+  click Click @relation(fields: [clickId], references: [id], onDelete: Cascade)
+
+  @@index([clickId])
+  @@map("bot_events")
+}
+
+// ---------------------------------------------------------------------------
+// Referral attribution foundation
+// ---------------------------------------------------------------------------
+
+/// Internal configuration of how AdstrackIO records referral/attribution
+/// data for a campaign. This does NOT spoof outbound HTTP Referer headers;
+/// it controls how the platform's own internal attribution pipeline labels
+/// traffic. CUSTOM_PARTNER_ATTRIBUTION configurations are gated by an
+/// approved ReferralProof — enforced in the service layer, see
+/// apps/api/src/modules/referrals/referral-configurations.service.ts.
+model ReferralConfiguration {
+  id                  String                       @id @default(cuid())
+  organizationId      String
+  campaignId          String?
+  type                ReferralConfigurationType
+  status              ReferralConfigurationStatus  @default(INACTIVE)
+  customReferrerValue String?
+  createdById         String
+  createdAt           DateTime                     @default(now())
+  updatedAt           DateTime                     @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign     Campaign?    @relation(fields: [campaignId], references: [id])
+  createdBy    User         @relation("ReferralConfigurationCreatedBy", fields: [createdById], references: [id])
+
+  proofs ReferralProof[]
+
+  @@index([organizationId])
+  @@map("referral_configurations")
+}
+
+model ReferralProof {
+  id                      String                     @id @default(cuid())
+  referralConfigurationId String
+  documentReference       String?
+  evidenceUrl             String?
+  submittedById           String
+  reviewStatus            ReferralProofReviewStatus  @default(PENDING)
+  reviewedById            String?
+  reviewedAt              DateTime?
+  rejectionReason         String?
+  createdAt               DateTime                   @default(now())
+  updatedAt               DateTime                   @updatedAt
+
+  referralConfiguration ReferralConfiguration @relation(fields: [referralConfigurationId], references: [id], onDelete: Cascade)
+  submittedBy           User                  @relation("ReferralProofSubmittedBy", fields: [submittedById], references: [id])
+  reviewedBy            User?                 @relation("ReferralProofReviewedBy", fields: [reviewedById], references: [id])
+
+  @@index([referralConfigurationId])
+  @@map("referral_proofs")
+}
+
+// ---------------------------------------------------------------------------
+// Audit logging
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String?
+  actorUserId    String?
+  action         String
+  entityType     String
+  entityId       String
+  metadata       Json?
+  createdAt      DateTime @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  actor        User?         @relation("AuditLogActor", fields: [actorUserId], references: [id])
+
+  @@index([organizationId, createdAt])
+  @@index([actorUserId])
+  @@map("audit_logs")
+}
