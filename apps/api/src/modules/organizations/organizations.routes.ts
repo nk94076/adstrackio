@@ -66,7 +66,13 @@ export async function registerOrganizationRoutes(fastify: FastifyInstance) {
     async (request, reply) => {
       const { organizationId } = request.params as { organizationId: string };
       const input = inviteMemberSchema.parse(request.body);
-      const membership = await addMember(fastify.prisma, request.user!.id, organizationId, input);
+      const membership = await addMember(
+        fastify.prisma,
+        request.user!.id,
+        request.membership!.role,
+        organizationId,
+        input,
+      );
       reply.status(201);
       return { membership };
     },
@@ -84,6 +90,7 @@ export async function registerOrganizationRoutes(fastify: FastifyInstance) {
       const membership = await updateMemberRole(
         fastify.prisma,
         request.user!.id,
+        request.membership!.role,
         organizationId,
         memberId,
         input.role,
@@ -100,7 +107,13 @@ export async function registerOrganizationRoutes(fastify: FastifyInstance) {
         organizationId: string;
         memberId: string;
       };
-      await removeMember(fastify.prisma, request.user!.id, organizationId, memberId);
+      await removeMember(
+        fastify.prisma,
+        request.user!.id,
+        request.membership!.role,
+        organizationId,
+        memberId,
+      );
       reply.status(204);
     },
   );
