@@ -51,6 +51,20 @@ via the `fastify.requireOrganizationMember(minimumRole)` preHandler
 its own minimum role; there is no client-side-only enforcement of any
 authorization rule.
 
+**The OWNER role has an additional guard beyond the linear hierarchy.**
+`requireOrganizationMember("ADMIN")` is satisfied by both ADMIN and OWNER,
+which would otherwise let an ADMIN grant themselves (or anyone else)
+OWNER, or demote/remove the real OWNER — a straightforward privilege
+escalation, found and fixed during the Phase 1 CTO review. The service
+layer (`assertActorCanManageOwnerRole` in
+`apps/api/src/modules/organizations/organizations.service.ts`) now
+requires the *actor* to already be an OWNER before any of `addMember`,
+`updateMemberRole`, or `removeMember` can touch the OWNER role in either
+direction (granting it, revoking it, or acting on a member who already
+holds it). Covered by
+`apps/api/src/modules/organizations/organizations.routes.test.ts` (see
+"OWNER role privilege escalation guards").
+
 The one non-trivial business rule in Phase 1 — a `CUSTOM_PARTNER_ATTRIBUTION`
 referral configuration cannot become `ACTIVE` without an `APPROVED`
 `ReferralProof` — is enforced in the **service layer**
@@ -58,7 +72,13 @@ referral configuration cannot become `ACTIVE` without an `APPROVED`
 `apps/api/src/modules/referrals/referral-configurations.service.ts`), not
 only validated in the dashboard UI. This means the rule holds even if a
 future API client, script, or admin tool calls the endpoint directly. It
-is covered by `apps/api/test/referral-workflow.test.ts`.
+is additionally enforced by a **Postgres trigger**
+(`enforce_referral_configuration_activation`, migration
+`20260901204759_enforce_referral_activation_gate`) as a backstop against
+any write that bypasses the service layer entirely — a raw SQL statement,
+a future admin tool, or a data migration. Both layers are covered by
+`apps/api/test/referral-workflow.test.ts`, including a test that attempts
+the raw-SQL bypass directly and asserts the trigger rejects it.
 
 ## Input validation
 
