@@ -52,7 +52,12 @@ export class InvalidSessionError extends Error {
 export async function verifySessionToken(token: string, secret: string): Promise<SessionPayload> {
   const secretKey = new TextEncoder().encode(secret);
   try {
-    const { payload } = await jwtVerify(token, secretKey);
+    // Pin the accepted algorithm explicitly rather than trusting whatever
+    // "alg" the token itself claims. jose's Uint8Array-keyed verify path
+    // already can't be tricked into treating an asymmetric-alg token as
+    // HMAC, but pinning is a cheap, standard defense-in-depth step against
+    // algorithm-confusion attacks.
+    const { payload } = await jwtVerify(token, secretKey, { algorithms: ["HS256"] });
     if (typeof payload.sub !== "string") {
       throw new Error("Missing subject claim");
     }
