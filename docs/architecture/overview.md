@@ -2,8 +2,8 @@
 
 ## Status
 
-This document describes AdstrackIO's architecture as of **Phase 8
-(Rules & Routing Engine)**. Phase 1 established the monorepo, data model,
+This document describes AdstrackIO's architecture as of **Phase 9
+(Affiliate/Partner System)**. Phase 1 established the monorepo, data model,
 authentication, and API foundation; Phase 2 (Domain Manager) added real
 DNS verification and domain activation; Phase 3 added the real tracker
 redirect endpoint; Phase 4 added User-Agent/geo enrichment on `Click` rows
@@ -24,10 +24,15 @@ deduplication and its own status lifecycle — see
 priority-ordered routing-rule engine that composes (not duplicates) Phase
 5's bot-traffic policy — a rule can only ever pick among the same
 TARGET/SAFE_PAGE/BLOCK outcomes the tracker already knew how to execute,
-never an arbitrary URL — see `docs/architecture/rules-routing.md`. Later
-phases (Affiliate/Partner System, Attribution & Advanced Reporting, API +
-Integrations, Google Certification) build on top of what's here, without
-requiring a rewrite of it.
+never an arbitrary URL — see `docs/architecture/rules-routing.md`; Phase 9
+added an affiliate/partner control plane (partner CRUD/lifecycle,
+campaign-roster assignment, and deterministic click/conversion
+attribution derived entirely from server-controlled tracking
+configuration, never client input) around the existing transparent
+tracker, with zero new synchronous calls on its redirect hot path — see
+`docs/architecture/affiliate-partners.md`. Later phases (Attribution &
+Advanced Reporting, API + Integrations, Google Certification) build on top
+of what's here, without requiring a rewrite of it.
 
 Nothing described as "future" or "not implemented" below exists yet. This
 document is written to stay accurate as those phases land — update it as
@@ -222,6 +227,19 @@ session model and the tradeoffs this accepts.
   consulted for `HUMAN`/`SUSPICIOUS`/`UNKNOWN` traffic; a campaign with no
   rules configured behaves identically to before this phase existed. See
   `docs/architecture/rules-routing.md`.
+- **Affiliate/Partner System (Phase 9)** is implemented — organizations
+  can create/manage `AffiliatePartner` records with an explicit
+  `PENDING -> ACTIVE -> PAUSED -> ARCHIVED` lifecycle, assign them to a
+  campaign's roster (`CampaignAffiliatePartner`), and attribute a specific
+  tracking link's clicks to exactly one roster partner
+  (`TrackingLink.affiliatePartnerId`). `Click.affiliatePartnerId` is a
+  denormalized snapshot copied from the resolving tracking link at write
+  time (zero extra tracker queries); `Conversion` gains no new column and
+  is attributed through the click it already references. Historical
+  attribution survives partner archival; RBAC mirrors Campaign's own
+  VIEWER/MEMBER/ADMIN tiering. Payouts, payment processing, webhooks, and
+  a partner-facing portal are explicitly out of scope. See
+  `docs/architecture/affiliate-partners.md`.
 - **Postbacks/webhooks for conversion status changes** (Phase 11) are out
   of scope so far — Phase 7 exposes the conversion service functions as a
   clean boundary for a future API/integrations layer to build on, but no
