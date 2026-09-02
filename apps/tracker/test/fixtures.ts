@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { prisma } from "@adstrackio/database";
-import type { TrackingLinkStatus } from "@adstrackio/database";
+import type { BotTrafficPolicyAction, TrackingLinkStatus } from "@adstrackio/database";
 
 export interface TrackerFixture {
   organizationId: string;
@@ -22,6 +22,10 @@ export interface CreateTrackerFixtureOptions {
   domainActive?: boolean;
   linkStatus?: TrackingLinkStatus;
   safePageUrl?: string | null;
+  /** Defaults to TARGET (see Campaign.suspiciousTrafficPolicy). */
+  suspiciousTrafficPolicy?: BotTrafficPolicyAction;
+  /** Defaults to TARGET (see Campaign.unknownTrafficPolicy). */
+  unknownTrafficPolicy?: BotTrafficPolicyAction;
 }
 
 /**
@@ -69,6 +73,8 @@ export async function createTrackerFixture(
       organizationId: organization.id,
       name: "Fixture Campaign",
       safePageUrl: options.safePageUrl ?? null,
+      suspiciousTrafficPolicy: options.suspiciousTrafficPolicy ?? "TARGET",
+      unknownTrafficPolicy: options.unknownTrafficPolicy ?? "TARGET",
     },
   });
 

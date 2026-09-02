@@ -77,6 +77,10 @@ export class PrismaTrackingResolver implements TrackingResolver {
       campaignId: link.campaignId,
       organizationId: domain.organizationId,
       safePageUrl: link.campaign.safePageUrl,
+      botTrafficPolicy: {
+        suspiciousTrafficPolicy: link.campaign.suspiciousTrafficPolicy,
+        unknownTrafficPolicy: link.campaign.unknownTrafficPolicy,
+      },
     };
   }
 }
