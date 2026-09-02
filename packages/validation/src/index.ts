@@ -6,3 +6,4 @@ export * from "./campaigns.js";
 export * from "./tracking-links.js";
 export * from "./referrals.js";
 export * from "./analytics.js";
+export * from "./conversions.js";
