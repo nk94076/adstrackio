@@ -24,13 +24,39 @@ export interface TrackerRouteOptions {
   ipHashSalt: string;
 }
 
-/** Strips a port suffix from the Host header (e.g. "track.example.com:8443"
+/**
+ * Strips a port suffix from the Host header (e.g. "track.example.com:8443"
  * in a non-standard-port deployment) and lowercases it — a registered
  * TrackingDomain hostname never itself contains a port (Phase 2 rejects
  * that at creation), so this is normalizing the *request*, not the stored
- * value, to the same shape. */
-function normalizeRequestHostname(hostname: string): string {
-  return hostname.split(":")[0]!.toLowerCase();
+ * value, to the same shape.
+ *
+ * A bracketed IPv6 literal (RFC 3986/7230: "[::1]" or "[::1]:8443") has to
+ * be handled specially — naively splitting on the first ":" would cut a
+ * bare IPv6 address into garbage (e.g. "[::1]" -> "["). This still can't
+ * change which domain a request resolves to: `normalizeTrackingHostname`
+ * (packages/shared/src/hostname.ts) rejects IP literals outright at
+ * TrackingDomain creation, so no registered domain is ever an IP address
+ * and an IPv6 Host header can never match one either way — this is
+ * correctness/hygiene (a sane, predictable lookup key and sane logs), not
+ * a fix for a reachable routing bug.
+ */
+export function normalizeRequestHostname(hostname: string): string {
+  const trimmed = hostname.trim();
+
+  if (trimmed.startsWith("[")) {
+    const closingBracket = trimmed.indexOf("]");
+    if (closingBracket !== -1) {
+      // Keep "[...]" intact; only a trailing ":<port>" after the bracket
+      // (if any) is stripped.
+      return trimmed.slice(0, closingBracket + 1).toLowerCase();
+    }
+    // Malformed (opening bracket, no closing one) — fall through to the
+    // plain-hostname path below rather than throwing; it still can't
+    // match a real TrackingDomain, so this safely 404s downstream.
+  }
+
+  return trimmed.split(":")[0]!.toLowerCase();
 }
 
 /** Fastify/Node header values are `string | string[] | undefined`; these
