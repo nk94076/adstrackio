@@ -127,6 +127,63 @@ describe("campaign and tracking link foundation", () => {
     expect(rejected.json().error.code).toBe("VALIDATION_ERROR");
   });
 
+  it("defaults suspiciousTrafficPolicy/unknownTrafficPolicy to TARGET when not specified (Phase 5)", async () => {
+    const { cookie, organizationId } = await setupOrg();
+
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/v1/organizations/${organizationId}/campaigns`,
+      headers: { cookie },
+      payload: { name: "Default Policy Campaign" },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().campaign.suspiciousTrafficPolicy).toBe("TARGET");
+    expect(created.json().campaign.unknownTrafficPolicy).toBe("TARGET");
+  });
+
+  it("accepts an explicit bot-traffic policy at creation and can update it afterward (Phase 5)", async () => {
+    const { cookie, organizationId } = await setupOrg();
+
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/v1/organizations/${organizationId}/campaigns`,
+      headers: { cookie },
+      payload: {
+        name: "Explicit Policy Campaign",
+        suspiciousTrafficPolicy: "SAFE_PAGE",
+        unknownTrafficPolicy: "BLOCK",
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().campaign.suspiciousTrafficPolicy).toBe("SAFE_PAGE");
+    expect(created.json().campaign.unknownTrafficPolicy).toBe("BLOCK");
+
+    const campaignId = created.json().campaign.id;
+    const updated = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/organizations/${organizationId}/campaigns/${campaignId}`,
+      headers: { cookie },
+      payload: { suspiciousTrafficPolicy: "TARGET" },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().campaign.suspiciousTrafficPolicy).toBe("TARGET");
+    // Untouched field is preserved, not reset to a default.
+    expect(updated.json().campaign.unknownTrafficPolicy).toBe("BLOCK");
+  });
+
+  it("rejects an invalid bot-traffic policy value (Phase 5)", async () => {
+    const { cookie, organizationId } = await setupOrg();
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/organizations/${organizationId}/campaigns`,
+      headers: { cookie },
+      payload: { name: "Invalid Policy Campaign", suspiciousTrafficPolicy: "REDIRECT_TO_MOON" },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe("VALIDATION_ERROR");
+  });
+
   it("supports the full chain: domain -> destination -> campaign -> tracking link", async () => {
     const { cookie, organizationId } = await setupOrg();
 

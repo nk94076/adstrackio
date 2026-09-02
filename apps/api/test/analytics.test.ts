@@ -363,6 +363,47 @@ describe("Click analytics API (Phase 4)", () => {
       expect(summary.uniqueClicksInRange).toBe(7); // 4 human pairs + 3 bot pairs, all distinct
       expect(summary.botPercentage).toBe(37.5);
     });
+
+    it("correctly counts SUSPICIOUS and UNKNOWN classifications alongside HUMAN/BOT (Phase 5)", async () => {
+      // Phase 5 makes SUSPICIOUS/UNKNOWN real, producible classifications
+      // (previously the tracker's detector only ever emitted HUMAN/BOT) —
+      // this proves the Phase 4 aggregation query, unchanged, already
+      // handles them correctly since they've been part of the
+      // BotClassification enum and CLASSIFICATION_AGGREGATES SQL since
+      // Phase 4 shipped.
+      const account = await registerOrgAccount(app);
+      const fixture = await createAnalyticsFixture(account.organizationId!);
+      const now = new Date();
+
+      await createClick({ ...fixture, occurredAt: now, botClassification: "HUMAN", ipHash: "h1", userAgent: "UA-A" });
+      await createClick({ ...fixture, occurredAt: now, botClassification: "HUMAN", ipHash: "h2", userAgent: "UA-A" });
+      await createClick({ ...fixture, occurredAt: now, botClassification: "BOT", ipHash: "h3", userAgent: "UA-B" });
+      await createClick({ ...fixture, occurredAt: now, botClassification: "SUSPICIOUS", ipHash: "h4", userAgent: "UA-C" });
+      await createClick({ ...fixture, occurredAt: now, botClassification: "SUSPICIOUS", ipHash: "h5", userAgent: "UA-C" });
+      await createClick({ ...fixture, occurredAt: now, botClassification: "SUSPICIOUS", ipHash: "h6", userAgent: "UA-C" });
+      await createClick({ ...fixture, occurredAt: now, botClassification: "UNKNOWN", ipHash: "h7", userAgent: "UA-D" });
+
+      const response = await app.inject({
+        method: "GET",
+        url: analyticsUrl(
+          fixture.organizationId,
+          "clicks/summary",
+          `?from=${new Date(now.getTime() - 60_000).toISOString()}&to=${new Date(now.getTime() + 60_000).toISOString()}`,
+        ),
+        headers: { cookie: account.cookie },
+      });
+
+      expect(response.statusCode).toBe(200);
+      const summary = response.json().summary;
+      expect(summary.totalClicks).toBe(7);
+      expect(summary.humanClicks).toBe(2);
+      expect(summary.botClicks).toBe(1);
+      expect(summary.suspiciousClicks).toBe(3);
+      expect(summary.unknownClicks).toBe(1);
+      // botPercentage is bot-of-total only — SUSPICIOUS/UNKNOWN never
+      // silently fold into it.
+      expect(summary.botPercentage).toBeCloseTo((1 / 7) * 100, 2);
+    });
   });
 
   describe("timeseries", () => {
