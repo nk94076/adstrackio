@@ -84,6 +84,13 @@ enum RoutingRuleAction {
   BLOCK
 }
 
+enum AffiliatePartnerStatus {
+  PENDING
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
 enum BotClassification {
   UNKNOWN
   HUMAN
@@ -155,6 +162,8 @@ model Organization {
   referralConfigurations ReferralConfiguration[]
   auditLogs              AuditLog[]
   routingRules           RoutingRule[]
+  affiliatePartners        AffiliatePartner[]
+  campaignAffiliatePartners CampaignAffiliatePartner[]
 
   @@map("organizations")
 }
@@ -269,6 +278,7 @@ model Campaign {
   conversions            Conversion[]
   referralConfigurations ReferralConfiguration[]
   routingRules           RoutingRule[]
+  affiliatePartnerAssignments CampaignAffiliatePartner[]
 
   @@index([organizationId])
   @@map("campaigns")
@@ -290,19 +300,33 @@ model TrackingLink {
   destinationId    String
   slug             String
   status           TrackingLinkStatus @default(ACTIVE)
+  /// Which single AffiliatePartner this link's clicks attribute to (Phase
+  /// 9: Affiliate/Partner System) — a plain FK, deliberately NOT a second
+  /// join table alongside CampaignAffiliatePartner (see
+  /// docs/architecture/affiliate-partners.md). Null means "no partner
+  /// attribution" (an ordinary, non-affiliate tracking link). When set,
+  /// must reference a partner currently on this link's own campaign's
+  /// roster (a CampaignAffiliatePartner row) — enforced in the service
+  /// layer and backstopped by `enforce_tracking_link_affiliate_partner`
+  /// (migration `20260902190000_affiliate_partner_system`). This is the
+  /// single deterministic attribution point every Click through this link
+  /// inherits — never a client-supplied value at click time.
+  affiliatePartnerId String?
   metadata         Json?
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
 
-  campaign       Campaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  trackingDomain TrackingDomain @relation(fields: [trackingDomainId], references: [id], onDelete: Cascade)
-  destination    Destination    @relation(fields: [destinationId], references: [id])
+  campaign         Campaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  trackingDomain   TrackingDomain    @relation(fields: [trackingDomainId], references: [id], onDelete: Cascade)
+  destination      Destination       @relation(fields: [destinationId], references: [id])
+  affiliatePartner AffiliatePartner? @relation(fields: [affiliatePartnerId], references: [id])
 
   clicks      Click[]
   conversions Conversion[]
 
   @@unique([trackingDomainId, slug])
   @@index([campaignId])
+  @@index([affiliatePartnerId])
   @@map("tracking_links")
 }
 
@@ -351,13 +375,28 @@ model Click {
   botClassification BotClassification? @default(UNKNOWN)
   botScore          Float?
 
+  /// Denormalized snapshot of the resolving TrackingLink's
+  /// affiliatePartnerId at the moment this Click was written (Phase 9:
+  /// Affiliate/Partner System) — never independently client-supplied and
+  /// never updated afterward (`enforce_click_affiliate_partner_immutable`,
+  /// migration `20260902190000_affiliate_partner_system`, is a cheap
+  /// UPDATE-only trigger, not an INSERT-time cross-table check — see
+  /// docs/architecture/affiliate-partners.md#tracker-performance for why
+  /// insert-time verification was deliberately NOT added to this
+  /// hot-path table). Trust comes from there being exactly one code path
+  /// that ever writes a Click row (apps/tracker's recordClick), which
+  /// derives this value from TrackingResolver's already-fetched result —
+  /// the same trust model this table's other FK columns already rely on.
+  affiliatePartnerId String?
+
   requestMetadata Json?
 
   createdAt DateTime @default(now())
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  campaign     Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  trackingLink TrackingLink @relation(fields: [trackingLinkId], references: [id], onDelete: Cascade)
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign         Campaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  trackingLink     TrackingLink      @relation(fields: [trackingLinkId], references: [id], onDelete: Cascade)
+  affiliatePartner AffiliatePartner? @relation(fields: [affiliatePartnerId], references: [id])
 
   conversions Conversion[]
   botEvents   BotEvent[]
@@ -367,6 +406,7 @@ model Click {
   @@index([trackingLinkId, occurredAt])
   @@index([campaignId])
   @@index([campaignId, occurredAt])
+  @@index([affiliatePartnerId, occurredAt])
   @@map("clicks")
 }
 
@@ -485,6 +525,84 @@ model RoutingRule {
   @@index([campaignId, status, priority])
   @@index([organizationId])
   @@map("routing_rules")
+}
+
+/// An external affiliate/partner an organization drives tracked traffic
+/// through (Phase 9: Affiliate/Partner System) — see
+/// docs/architecture/affiliate-partners.md.
+///
+/// Deliberately distinct from ReferralConfiguration (Phase 1): that model
+/// controls how AdstrackIO's own internal attribution pipeline LABELS
+/// traffic (referrer header spoofing/hiding) — it is not a real business
+/// entity. AffiliatePartner is an actual affiliate/partner that gets
+/// assigned to campaigns (CampaignAffiliatePartner) and whose tracking
+/// links (TrackingLink.affiliatePartnerId) produce Clicks attributed back
+/// to them. This phase does not touch ReferralConfiguration.
+///
+/// externalId is optional and unique per organization, not globally — the
+/// same NULL-is-distinct Postgres uniqueness semantics
+/// Conversion.externalConversionId already established (Phase 7): any
+/// number of partners with a NULL externalId coexist freely within one
+/// organization, and the same externalId value is free to reuse across
+/// different organizations.
+model AffiliatePartner {
+  id             String                 @id @default(cuid())
+  organizationId String
+  name           String
+  externalId     String?
+  email          String?
+  status         AffiliatePartnerStatus @default(PENDING)
+  metadata       Json?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  campaignAssignments CampaignAffiliatePartner[]
+  trackingLinks       TrackingLink[]
+  clicks              Click[]
+
+  @@unique([organizationId, externalId])
+  @@index([organizationId, status])
+  @@map("affiliate_partners")
+}
+
+/// Join model: which AffiliatePartners are authorized to run traffic on a
+/// given Campaign (Phase 9) — the roster/authorization relationship the
+/// campaign-scoped assignment API manages (POST/DELETE
+/// .../campaigns/:campaignId/affiliate-partners/:partnerId). This is
+/// deliberately the ONLY join table Phase 9 introduces: it does not by
+/// itself determine which single partner a given Click attributes to —
+/// that is TrackingLink.affiliatePartnerId, a plain FK rather than a
+/// second join table (TrackingLinkAffiliatePartner), so a click's
+/// attribution is always exactly one deterministic value, never a set to
+/// disambiguate at read time. See
+/// docs/architecture/affiliate-partners.md#assignment-design for the full
+/// rationale.
+///
+/// organizationId is denormalized from campaignId purely for query
+/// performance and IDOR-check convenience, mirroring Conversion/
+/// RoutingRule's own established denormalization pattern; it is derived
+/// and locked by `enforce_campaign_affiliate_partner_organization`
+/// (migration `20260902190000_affiliate_partner_system`), never
+/// independently client-supplied. That same trigger also verifies the
+/// referenced AffiliatePartner belongs to the same organization as the
+/// Campaign — the actual cross-org-assignment backstop.
+model CampaignAffiliatePartner {
+  id                 String   @id @default(cuid())
+  organizationId     String
+  campaignId         String
+  affiliatePartnerId String
+  createdAt          DateTime @default(now())
+
+  organization     Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign         Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  affiliatePartner AffiliatePartner @relation(fields: [affiliatePartnerId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, affiliatePartnerId])
+  @@index([organizationId])
+  @@index([affiliatePartnerId])
+  @@map("campaign_affiliate_partners")
 }
 
 /// Foundation model only. Classification/scoring is expected to be produced
