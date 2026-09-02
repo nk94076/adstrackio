@@ -75,3 +75,35 @@ export async function assertCampaignAcceptsNewOrReactivatedLinks(
     throw ApiError.conflict("Cannot add or activate tracking links on an archived campaign");
   }
 }
+
+/**
+ * Used when attributing a TrackingLink to an AffiliatePartner (Phase 9:
+ * Affiliate/Partner System) — the partner must belong to this
+ * organization AND already be on the target campaign's roster (a
+ * CampaignAffiliatePartner row), the same two facts
+ * `enforce_tracking_link_affiliate_partner` re-verifies at the database
+ * layer as a backstop. Checking both here first lets the API return a
+ * clean 400/409 instead of surfacing a raw trigger error.
+ */
+export async function assertAffiliatePartnerAssignable(
+  prisma: PrismaClient,
+  organizationId: string,
+  campaignId: string,
+  affiliatePartnerId: string,
+): Promise<void> {
+  const partner = await prisma.affiliatePartner.findFirst({
+    where: { id: affiliatePartnerId, organizationId },
+  });
+  if (!partner) {
+    throw ApiError.validation("affiliatePartnerId does not belong to this organization");
+  }
+
+  const assignment = await prisma.campaignAffiliatePartner.findUnique({
+    where: { campaignId_affiliatePartnerId: { campaignId, affiliatePartnerId } },
+  });
+  if (!assignment) {
+    throw ApiError.validation(
+      "affiliatePartnerId is not assigned to this tracking link's campaign — assign it to the campaign first",
+    );
+  }
+}

@@ -105,7 +105,15 @@ export async function createTestClick(
   organizationId: string,
   campaignId: string,
   trackingLinkId: string,
-  overrides: { botClassification?: "HUMAN" | "BOT" | "SUSPICIOUS" | "UNKNOWN" } = {},
+  overrides: {
+    botClassification?: "HUMAN" | "BOT" | "SUSPICIOUS" | "UNKNOWN";
+    /** Phase 9: Affiliate/Partner System — simulates the value
+     * apps/tracker's recordClick would have copied from the resolving
+     * TrackingLink at write time. Real Click rows never get this from a
+     * client; tests set it directly the same way this helper already
+     * bypasses the tracker for botClassification. */
+    affiliatePartnerId?: string;
+  } = {},
 ): Promise<{ id: string }> {
   return prisma.click.create({
     data: {
@@ -114,6 +122,7 @@ export async function createTestClick(
       campaignId,
       trackingLinkId,
       botClassification: overrides.botClassification ?? "HUMAN",
+      affiliatePartnerId: overrides.affiliatePartnerId,
     },
   });
 }

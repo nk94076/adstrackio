@@ -22,6 +22,12 @@ export interface AnalyticsFilters {
   campaignId?: string;
   trackingLinkId?: string;
   trackingDomainId?: string;
+  /** Phase 9: Affiliate/Partner System — scopes every query in this file
+   * down to one partner's attributed traffic. Clicks carry
+   * affiliatePartnerId directly; conversions have no column of their own
+   * (see buildConversionWhere below) and are matched by joining through
+   * the click each conversion references. */
+  affiliatePartnerId?: string;
 }
 
 /** Cap on rows returned by a breakdown query (by-campaign, by-referrer,
@@ -45,6 +51,9 @@ function buildWhere(filters: AnalyticsFilters): Prisma.Sql {
     conditions.push(
       Prisma.sql`c."trackingLinkId" IN (SELECT id FROM tracking_links WHERE "trackingDomainId" = ${filters.trackingDomainId})`,
     );
+  }
+  if (filters.affiliatePartnerId) {
+    conditions.push(Prisma.sql`c."affiliatePartnerId" = ${filters.affiliatePartnerId}`);
   }
   return Prisma.join(conditions, " AND ");
 }
@@ -388,6 +397,16 @@ function buildConversionWhere(filters: AnalyticsFilters): Prisma.Sql {
       Prisma.sql`cv."trackingLinkId" IN (SELECT id FROM tracking_links WHERE "trackingDomainId" = ${filters.trackingDomainId})`,
     );
   }
+  if (filters.affiliatePartnerId) {
+    // Conversion carries no affiliatePartnerId column of its own (Phase 9
+    // deliberately avoids duplicating attribution data there — see
+    // docs/architecture/affiliate-partners.md#conversion-attribution);
+    // partner scoping is derived by joining through the click each
+    // conversion references, same subquery style as trackingDomainId above.
+    conditions.push(
+      Prisma.sql`cv."clickId" IN (SELECT id FROM clicks WHERE "affiliatePartnerId" = ${filters.affiliatePartnerId})`,
+    );
+  }
   return Prisma.join(conditions, " AND ");
 }
 
@@ -504,4 +523,91 @@ export async function getClicksByCountry(
     LIMIT ${BREAKDOWN_ROW_LIMIT}
   `);
   return rows.map((row) => ({ ...row, label: row.key }));
+}
+
+// ---------------------------------------------------------------------------
+// Affiliate partner performance (Phase 9) — see
+// docs/architecture/affiliate-partners.md#analytics for full definitions.
+//
+// This is deliberately the ONLY new analytics function Phase 9 adds: rather
+// than a getClicksByAffiliatePartner *and* a separate conversions-by-partner
+// breakdown (a second and third parallel query pattern), one function
+// returns clicks + conversions + conversion rate per partner in a single
+// call, reusing buildWhere/buildConversionWhere exactly as
+// getConversionSummary already does (two parallel raw queries, joined in
+// JS) — see that function's own doc comment for the same shape.
+// ---------------------------------------------------------------------------
+
+export interface AffiliatePartnerPerformanceRow {
+  affiliatePartnerId: string;
+  name: string;
+  status: string;
+  clicks: number;
+  humanClicks: number;
+  conversions: number;
+  approvedConversions: number;
+  /** approvedConversions / humanClicks as a percentage — same convention
+   * and same "independently filtered by each row's own occurredAt, not a
+   * cohort rate" caveat as ConversionSummary.conversionRate. 0 when
+   * humanClicks is 0. */
+  conversionRate: number;
+}
+
+export async function getAffiliatePartnerPerformance(
+  prisma: PrismaClient,
+  filters: AnalyticsFilters,
+): Promise<AffiliatePartnerPerformanceRow[]> {
+  const clicksWhere = buildWhere(filters);
+  const conversionsWhere = buildConversionWhere(filters);
+
+  const [partners, clickRows, conversionRows] = await Promise.all([
+    prisma.affiliatePartner.findMany({
+      where: { organizationId: filters.organizationId },
+      select: { id: true, name: true, status: true },
+      orderBy: { createdAt: "desc" },
+      take: BREAKDOWN_ROW_LIMIT,
+    }),
+    prisma.$queryRaw<{ affiliatePartnerId: string; clicks: number; humanClicks: number }[]>(Prisma.sql`
+      SELECT
+        c."affiliatePartnerId" AS "affiliatePartnerId",
+        COUNT(*)::int AS clicks,
+        COUNT(*) FILTER (WHERE c."botClassification" = 'HUMAN')::int AS "humanClicks"
+      FROM clicks c
+      WHERE ${clicksWhere} AND c."affiliatePartnerId" IS NOT NULL
+      GROUP BY c."affiliatePartnerId"
+    `),
+    prisma.$queryRaw<
+      { affiliatePartnerId: string; conversions: number; approvedConversions: number }[]
+    >(Prisma.sql`
+      SELECT
+        c."affiliatePartnerId" AS "affiliatePartnerId",
+        COUNT(*)::int AS conversions,
+        COUNT(*) FILTER (WHERE cv.status = 'APPROVED')::int AS "approvedConversions"
+      FROM conversions cv
+      JOIN clicks c ON c.id = cv."clickId"
+      WHERE ${conversionsWhere} AND c."affiliatePartnerId" IS NOT NULL
+      GROUP BY c."affiliatePartnerId"
+    `),
+  ]);
+
+  const clicksByPartner = new Map(clickRows.map((row) => [row.affiliatePartnerId, row]));
+  const conversionsByPartner = new Map(conversionRows.map((row) => [row.affiliatePartnerId, row]));
+
+  return partners.map((partner) => {
+    const clicks = clicksByPartner.get(partner.id);
+    const conversions = conversionsByPartner.get(partner.id);
+    const humanClicks = clicks?.humanClicks ?? 0;
+    const approvedConversions = conversions?.approvedConversions ?? 0;
+    return {
+      affiliatePartnerId: partner.id,
+      name: partner.name,
+      status: partner.status,
+      clicks: clicks?.clicks ?? 0,
+      humanClicks,
+      conversions: conversions?.conversions ?? 0,
+      approvedConversions,
+      conversionRate:
+        humanClicks > 0 ? Math.round((approvedConversions / humanClicks) * 10000) / 100 : 0,
+    };
+  });
 }

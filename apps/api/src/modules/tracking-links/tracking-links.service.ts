@@ -9,6 +9,7 @@ import type { CreateTrackingLinkInput, UpdateTrackingLinkInput } from "@adstrack
 import { writeAuditLog } from "../audit-logs/audit-log.service.js";
 import { getCampaign } from "../campaigns/campaigns.service.js";
 import {
+  assertAffiliatePartnerAssignable,
   assertCampaignAcceptsNewOrReactivatedLinks,
   assertDestinationAssignable,
   assertTrackingDomainAssignable,
@@ -17,14 +18,29 @@ import {
 async function assertCreateReferencesValid(
   prisma: PrismaClient,
   organizationId: string,
-  input: { campaignId: string; trackingDomainId: string; destinationId: string },
+  input: {
+    campaignId: string;
+    trackingDomainId: string;
+    destinationId: string;
+    affiliatePartnerId?: string;
+  },
 ) {
   // Order matters for a clear error message: campaign existence/status
   // first (a link cannot exist without a valid campaign to belong to),
-  // then the domain/destination it will actually use.
+  // then the domain/destination it will actually use, then (Phase 9) the
+  // affiliate partner it will attribute clicks to, if any — checked last
+  // since it depends on the campaign already being known-valid.
   await assertCampaignAcceptsNewOrReactivatedLinks(prisma, organizationId, input.campaignId);
   await assertTrackingDomainAssignable(prisma, organizationId, input.trackingDomainId);
   await assertDestinationAssignable(prisma, organizationId, input.destinationId);
+  if (input.affiliatePartnerId) {
+    await assertAffiliatePartnerAssignable(
+      prisma,
+      organizationId,
+      input.campaignId,
+      input.affiliatePartnerId,
+    );
+  }
 }
 
 /**
@@ -57,6 +73,7 @@ export async function createTrackingLink(
         destinationId: input.destinationId,
         slug: input.slug,
         status: input.status,
+        affiliatePartnerId: input.affiliatePartnerId,
         metadata: input.metadata as Prisma.InputJsonValue | undefined,
       },
     });
@@ -67,7 +84,11 @@ export async function createTrackingLink(
       action: "tracking_link.created",
       entityType: "TrackingLink",
       entityId: trackingLink.id,
-      metadata: { slug: trackingLink.slug, campaignId: trackingLink.campaignId },
+      metadata: {
+        slug: trackingLink.slug,
+        campaignId: trackingLink.campaignId,
+        affiliatePartnerId: trackingLink.affiliatePartnerId,
+      },
     });
 
     return trackingLink;
@@ -138,10 +159,21 @@ export async function updateTrackingLink(
   trackingLinkId: string,
   input: UpdateTrackingLinkInput,
 ) {
-  await getTrackingLink(prisma, organizationId, trackingLinkId);
+  const existing = await getTrackingLink(prisma, organizationId, trackingLinkId);
 
   if (input.destinationId) {
     await assertDestinationAssignable(prisma, organizationId, input.destinationId);
+  }
+  // null explicitly clears attribution (always allowed); a string value
+  // must be assignable against this link's own campaign; undefined leaves
+  // the current attribution untouched.
+  if (input.affiliatePartnerId) {
+    await assertAffiliatePartnerAssignable(
+      prisma,
+      organizationId,
+      existing.campaignId,
+      input.affiliatePartnerId,
+    );
   }
 
   return prisma.$transaction(async (tx) => {
@@ -149,6 +181,7 @@ export async function updateTrackingLink(
       where: { id: trackingLinkId },
       data: {
         destinationId: input.destinationId,
+        affiliatePartnerId: input.affiliatePartnerId,
         metadata: input.metadata as Prisma.InputJsonValue | undefined,
       },
     });
@@ -159,6 +192,10 @@ export async function updateTrackingLink(
       action: "tracking_link.updated",
       entityType: "TrackingLink",
       entityId: trackingLink.id,
+      metadata:
+        input.affiliatePartnerId !== undefined
+          ? { affiliatePartnerId: trackingLink.affiliatePartnerId }
+          : undefined,
     });
 
     return trackingLink;

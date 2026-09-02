@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { analyticsFilterSchema, timeseriesFilterSchema } from "@adstrackio/validation";
 import {
+  getAffiliatePartnerPerformance,
   getClickSummary,
   getClickTimeseries,
   getClicksByBrowser,
@@ -24,7 +25,14 @@ import {
  */
 function toFilters(
   organizationId: string,
-  input: { from: Date; to: Date; campaignId?: string; trackingLinkId?: string; trackingDomainId?: string },
+  input: {
+    from: Date;
+    to: Date;
+    campaignId?: string;
+    trackingLinkId?: string;
+    trackingDomainId?: string;
+    affiliatePartnerId?: string;
+  },
 ): AnalyticsFilters {
   return {
     organizationId,
@@ -33,6 +41,7 @@ function toFilters(
     campaignId: input.campaignId,
     trackingLinkId: input.trackingLinkId,
     trackingDomainId: input.trackingDomainId,
+    affiliatePartnerId: input.affiliatePartnerId,
   };
 }
 
@@ -166,6 +175,21 @@ export async function registerAnalyticsRoutes(fastify: FastifyInstance) {
       const input = analyticsFilterSchema.parse(request.query);
       const summary = await getConversionSummary(fastify.prisma, toFilters(organizationId, input));
       return { summary, range: rangeOf(input) };
+    },
+  );
+
+  // Phase 9: Affiliate/Partner System — per-partner clicks/conversions/
+  // conversion-rate. Every filter above (campaignId, trackingLinkId,
+  // trackingDomainId, and even affiliatePartnerId itself) still applies, so
+  // a caller can e.g. scope this to one campaign's partner performance.
+  fastify.get(
+    "/organizations/:organizationId/analytics/affiliate-partners/performance",
+    { preHandler },
+    async (request) => {
+      const { organizationId } = request.params as { organizationId: string };
+      const input = analyticsFilterSchema.parse(request.query);
+      const rows = await getAffiliatePartnerPerformance(fastify.prisma, toFilters(organizationId, input));
+      return { rows, range: rangeOf(input) };
     },
   );
 }
