@@ -21,7 +21,7 @@ so the roadmap this schema was designed against is explicit.
 | `Destination` | The business URL a campaign/link points to | IMPLEMENTED (CRUD + URL validation). Administrative/informational only for tracker purposes as of Phase 3 — see `TrackingLink` below |
 | `Campaign` | Groups tracking links under a name/status/budget; also carries the Phase 3 Safe Page URL | IMPLEMENTED (CRUD). `safePageUrl` is Phase 3's minimal bot-routing foundation, not a routing-rules engine (FUTURE PHASE: Rules & Routing Engine) |
 | `TrackingLink` | A routable slug on a domain | IMPLEMENTED (Phase 3) — `apps/tracker`'s `GET /:slug` resolves and redirects through this |
-| `Click` | An individual inbound tracking event | IMPLEMENTED (Phase 3) — written by the tracker on every resolved request. Browser/OS/geo enrichment deferred (FUTURE PHASE: Click Analytics) |
+| `Click` | An individual inbound tracking event | IMPLEMENTED (Phase 3, enriched Phase 4) — written by the tracker on every resolved request; Phase 4 added real browser/OS enrichment and an optional geo-location provider (see `docs/architecture/click-analytics.md`) |
 | `Conversion` | A recorded conversion event | FOUNDATION ONLY — schema only, no postback ingestion (FUTURE PHASE: Conversion Tracking) |
 | `BotEvent` | A bot-detection verdict for a click | IMPLEMENTED (Phase 3) — written by the tracker via the explicitly-provisional `HeuristicBotDetectionEngine`; a real detection engine is FUTURE PHASE: Bot Detection Integration |
 | `ReferralConfiguration` | How referral/attribution is labeled for a campaign | IMPLEMENTED, including the approval gate (app + database level) |
@@ -124,13 +124,30 @@ Privacy-by-design notes on `Click`:
   PII in this schema.
 - `botClassification` / `botScore` on `Click` are a **denormalized
   snapshot** of the latest related `BotEvent`, kept for fast filtering in
-  future analytics queries. `BotEvent` remains the source of truth and can
-  hold multiple historical classifications per click (e.g. if re-scored).
-- `deviceType`/`browser`/`os`/`country`/`region`/`city` are left at their
-  defaults (`UNKNOWN`/`null`) except `deviceType`, which the tracker sets
-  to `BOT` when classified as such. There is no user-agent-parsing or
-  geo-lookup capability in this codebase yet — building one is Phase 4
-  (Click Analytics) work, not Phase 3's.
+  analytics queries (Phase 4 — `docs/architecture/click-analytics.md`).
+  `BotEvent` remains the source of truth and can hold multiple historical
+  classifications per click (e.g. if re-scored).
+- `deviceType`/`browser`/`browserVersion`/`os`/`osVersion` are populated
+  by `UserAgentParser` (Phase 4 — `packages/shared/src/user-agent.ts`,
+  implemented by `UaParserUserAgentParser` in `apps/tracker`), written
+  synchronously in the same transaction as the `Click` row, except that
+  `deviceType` is forced to `BOT` when the click's `botClassification` is
+  `BOT`, overriding whatever the UA parser derived. `country`/`region`/
+  `city`/`timezone` are populated by the pluggable `GeoLocationProvider`
+  (`packages/shared/src/geo-location.ts`) — `null` at write time and,
+  unless an operator configures a real provider, permanently (the wired-in
+  `NullGeoLocationProvider` performs no lookup at all). When a real
+  provider is configured, its lookup runs **in the background, after** the
+  `Click` row is written, and applies its result via a follow-up `UPDATE`
+  if/when it resolves — so a `Click` row's geo fields are eventually
+  consistent, not guaranteed populated at write time, even with a working
+  provider. A failure or delay in either enrichment step degrades to
+  "unknown"/`null` (UA) or simply leaves the fields `null` for longer (geo)
+  rather than blocking the `Click` write — see
+  `docs/architecture/click-analytics.md#data-enrichment-strategy-keeping-the-redirect-hot-path-safe`.
+  `timezone` here is the click's *inferred location's* IANA zone from geo
+  lookup — distinct from the analytics API's `timezone` query parameter
+  used for time-bucketing.
 
 `BotEvent.detectionSource` and `reasonCodes` are written by whichever bot
 detection engine is wired in. Phase 3 wires in
@@ -153,8 +170,11 @@ CTO review found these two missing.
 ### Flagged for the phase that scales this up (not fixed now)
 
 Reviewed for what could become a problem at real click volume — none of
-this blocks Phase 3, since click volume in any near-term deployment is far
-below where these start to matter, but it should inform Phase 4's design
+this blocks Phase 3 or Phase 4 (Click Analytics still reads/writes this
+same unpartitioned table, just with two added indexes — see
+`docs/architecture/click-analytics.md#performance-strategy`), since click
+volume in any near-term deployment is far below where these start to
+matter, but it should inform a future high-volume-ingestion redesign
 rather than being rediscovered under load:
 
 - **Primary key strategy.** `Click.id` is explicitly generated as a
@@ -166,8 +186,8 @@ rather than being rediscovered under load:
   sustained high-volume insert rates, a purely time-ordered key (e.g.
   UUIDv7/ULID prefixed, or a separate `bigint` identity column with the
   random UUID as a secondary unique column) indexes and partitions more
-  efficiently. Worth an explicit decision when Phase 4 designs real
-  high-volume ingestion — not a problem at today's expected volume.
+  efficiently. Worth an explicit decision if/when a future phase designs
+  real high-volume ingestion — not a problem at today's expected volume.
 - **No table partitioning.** A single unpartitioned `clicks` table will
   eventually need time-based partitioning (e.g. monthly) for both write
   throughput and the ability to cheaply drop/archive old data. Standard

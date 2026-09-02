@@ -1,0 +1,159 @@
+import type { FastifyInstance } from "fastify";
+import { analyticsFilterSchema, timeseriesFilterSchema } from "@adstrackio/validation";
+import {
+  getClickSummary,
+  getClickTimeseries,
+  getClicksByBrowser,
+  getClicksByCampaign,
+  getClicksByCountry,
+  getClicksByDevice,
+  getClicksByDomain,
+  getClicksByLink,
+  getClicksByOs,
+  getClicksByReferrer,
+  type AnalyticsFilters,
+} from "./analytics.service.js";
+
+/**
+ * All analytics endpoints are read-only and organization-scoped, gated by
+ * VIEWER — the existing minimum role for read access elsewhere (domains,
+ * campaigns, etc.). There is no analytics-specific authorization path;
+ * this reuses fastify.authenticate / requireOrganizationMember exactly as
+ * every other module does.
+ */
+function toFilters(
+  organizationId: string,
+  input: { from: Date; to: Date; campaignId?: string; trackingLinkId?: string; trackingDomainId?: string },
+): AnalyticsFilters {
+  return {
+    organizationId,
+    from: input.from,
+    to: input.to,
+    campaignId: input.campaignId,
+    trackingLinkId: input.trackingLinkId,
+    trackingDomainId: input.trackingDomainId,
+  };
+}
+
+function rangeOf(input: { from: Date; to: Date; timezone: string }) {
+  return { from: input.from.toISOString(), to: input.to.toISOString(), timezone: input.timezone };
+}
+
+export async function registerAnalyticsRoutes(fastify: FastifyInstance) {
+  const preHandler = [fastify.authenticate, fastify.requireOrganizationMember("VIEWER")];
+
+  fastify.get(
+    "/organizations/:organizationId/analytics/clicks/summary",
+    { preHandler },
+    async (request) => {
+      const { organizationId } = request.params as { organizationId: string };
+      const input = analyticsFilterSchema.parse(request.query);
+      const summary = await getClickSummary(fastify.prisma, toFilters(organizationId, input));
+      return { summary, range: rangeOf(input) };
+    },
+  );
+
+  fastify.get(
+    "/organizations/:organizationId/analytics/clicks/timeseries",
+    { preHandler },
+    async (request) => {
+      const { organizationId } = request.params as { organizationId: string };
+      const input = timeseriesFilterSchema.parse(request.query);
+      const points = await getClickTimeseries(
+        fastify.prisma,
+        toFilters(organizationId, input),
+        input.bucket,
+        input.timezone,
+      );
+      return { points, bucket: input.bucket, range: rangeOf(input) };
+    },
+  );
+
+  fastify.get(
+    "/organizations/:organizationId/analytics/clicks/by-campaign",
+    { preHandler },
+    async (request) => {
+      const { organizationId } = request.params as { organizationId: string };
+      const input = analyticsFilterSchema.parse(request.query);
+      const rows = await getClicksByCampaign(fastify.prisma, toFilters(organizationId, input));
+      return { rows, range: rangeOf(input) };
+    },
+  );
+
+  fastify.get(
+    "/organizations/:organizationId/analytics/clicks/by-link",
+    { preHandler },
+    async (request) => {
+      const { organizationId } = request.params as { organizationId: string };
+      const input = analyticsFilterSchema.parse(request.query);
+      const rows = await getClicksByLink(fastify.prisma, toFilters(organizationId, input));
+      return { rows, range: rangeOf(input) };
+    },
+  );
+
+  fastify.get(
+    "/organizations/:organizationId/analytics/clicks/by-domain",
+    { preHandler },
+    async (request) => {
+      const { organizationId } = request.params as { organizationId: string };
+      const input = analyticsFilterSchema.parse(request.query);
+      const rows = await getClicksByDomain(fastify.prisma, toFilters(organizationId, input));
+      return { rows, range: rangeOf(input) };
+    },
+  );
+
+  fastify.get(
+    "/organizations/:organizationId/analytics/clicks/by-referrer",
+    { preHandler },
+    async (request) => {
+      const { organizationId } = request.params as { organizationId: string };
+      const input = analyticsFilterSchema.parse(request.query);
+      const rows = await getClicksByReferrer(fastify.prisma, toFilters(organizationId, input));
+      return { rows, range: rangeOf(input) };
+    },
+  );
+
+  fastify.get(
+    "/organizations/:organizationId/analytics/clicks/by-device",
+    { preHandler },
+    async (request) => {
+      const { organizationId } = request.params as { organizationId: string };
+      const input = analyticsFilterSchema.parse(request.query);
+      const rows = await getClicksByDevice(fastify.prisma, toFilters(organizationId, input));
+      return { rows, range: rangeOf(input) };
+    },
+  );
+
+  fastify.get(
+    "/organizations/:organizationId/analytics/clicks/by-browser",
+    { preHandler },
+    async (request) => {
+      const { organizationId } = request.params as { organizationId: string };
+      const input = analyticsFilterSchema.parse(request.query);
+      const rows = await getClicksByBrowser(fastify.prisma, toFilters(organizationId, input));
+      return { rows, range: rangeOf(input) };
+    },
+  );
+
+  fastify.get(
+    "/organizations/:organizationId/analytics/clicks/by-os",
+    { preHandler },
+    async (request) => {
+      const { organizationId } = request.params as { organizationId: string };
+      const input = analyticsFilterSchema.parse(request.query);
+      const rows = await getClicksByOs(fastify.prisma, toFilters(organizationId, input));
+      return { rows, range: rangeOf(input) };
+    },
+  );
+
+  fastify.get(
+    "/organizations/:organizationId/analytics/clicks/by-country",
+    { preHandler },
+    async (request) => {
+      const { organizationId } = request.params as { organizationId: string };
+      const input = analyticsFilterSchema.parse(request.query);
+      const rows = await getClicksByCountry(fastify.prisma, toFilters(organizationId, input));
+      return { rows, range: rangeOf(input) };
+    },
+  );
+}

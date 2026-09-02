@@ -280,6 +280,14 @@ model TrackingLink {
 /// or other directly-identifying fields are stored. botClassification/
 /// botScore are a denormalized snapshot of the latest related BotEvent to
 /// keep read queries fast; BotEvent remains the source of truth.
+///
+/// deviceType/browser/browserVersion/os/osVersion and country/region/city/
+/// timezone are enrichment fields populated by apps/tracker at write time
+/// (Phase 4: Click Analytics) via the UserAgentParser and GeoLocationProvider
+/// abstractions in packages/shared — never guessed or backfilled elsewhere.
+/// A parsing/lookup failure leaves the relevant fields null rather than
+/// blocking the click write or the redirect; see
+/// docs/architecture/click-analytics.md.
 model Click {
   id             String   @id @default(cuid())
   organizationId String
@@ -291,13 +299,20 @@ model Click {
   userAgent String? @db.Text
   referrer  String? @db.Text
 
-  country String?
-  region  String?
-  city    String?
+  country  String?
+  region   String?
+  city     String?
+  /// IANA timezone of the click's inferred location (e.g. "America/New_York"),
+  /// from GeoLocationProvider — distinct from the analytics API's `timezone`
+  /// query parameter used for time-bucketing. Null when no geo provider is
+  /// configured (the default — see packages/shared/src/geo-location.ts).
+  timezone String?
 
-  deviceType DeviceType? @default(UNKNOWN)
-  browser    String?
-  os         String?
+  deviceType     DeviceType? @default(UNKNOWN)
+  browser        String?
+  browserVersion String?
+  os             String?
+  osVersion      String?
 
   botClassification BotClassification? @default(UNKNOWN)
   botScore           Float?
@@ -315,7 +330,9 @@ model Click {
 
   @@index([organizationId, occurredAt])
   @@index([trackingLinkId])
+  @@index([trackingLinkId, occurredAt])
   @@index([campaignId])
+  @@index([campaignId, occurredAt])
   @@map("clicks")
 }
 

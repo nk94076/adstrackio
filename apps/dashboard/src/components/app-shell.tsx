@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { href: "/domains", label: "Domains" },
   { href: "/campaigns", label: "Campaigns" },
   { href: "/tracking-links", label: "Tracking Links" },
+  { href: "/analytics", label: "Analytics" },
   { href: "/referrals", label: "Referrals" },
   { href: "/audit-logs", label: "Audit Logs" },
   { href: "/settings", label: "Settings" },

@@ -2,11 +2,13 @@
 
 ## Status
 
-This document describes AdstrackIO's architecture as of **Phase 3
-(Transparent Click Tracker)**. Phase 1 established the monorepo, data
-model, authentication, and API foundation; Phase 2 (Domain Manager) added
-real DNS verification and domain activation; Phase 3 added the real
-tracker redirect endpoint. Later phases (Click Analytics, Bot Detection
+This document describes AdstrackIO's architecture as of **Phase 4 (Click
+Analytics)**. Phase 1 established the monorepo, data model,
+authentication, and API foundation; Phase 2 (Domain Manager) added real
+DNS verification and domain activation; Phase 3 added the real tracker
+redirect endpoint; Phase 4 added User-Agent/geo enrichment on `Click` rows
+and a read-only analytics API + dashboard on top of them — see
+`docs/architecture/click-analytics.md`. Later phases (Bot Detection
 Integration, Campaign Manager, Conversion Tracking, Rules & Routing
 Engine, Affiliate/Partner System, Attribution & Advanced Reporting, API +
 Integrations, Google Certification) build on top of what's here, without
@@ -34,7 +36,8 @@ adstrackio/
     validation/  Zod request schemas shared by apps/api (and reusable by
                  apps/dashboard)
     shared/      Cross-cutting types: API error shape, URL normalization,
-                 and the TrackingResolver / BotDetectionEngine interfaces
+                 and the TrackingResolver / BotDetectionEngine /
+                 UserAgentParser / GeoLocationProvider interfaces
     logger/      Structured logging (pino) with secret redaction
   docker/        docker-compose.yml for local Postgres + Redis
   docs/          This documentation
@@ -129,7 +132,13 @@ session model and the tradeoffs this accepts.
   existing/planned bot-detection capability" Phase 5 is meant to wire in
   through the same interface hasn't landed yet. See the inline
   documentation in `packages/shared/src/tracking-resolver.ts` and
-  `packages/shared/src/bot-detection.ts`.
+  `packages/shared/src/bot-detection.ts`. Phase 4 added two more
+  interfaces in the same package following the same pattern:
+  `UserAgentParser` (`packages/shared/src/user-agent.ts`, implemented by
+  `UaParserUserAgentParser` in `apps/tracker`) and `GeoLocationProvider`
+  (`packages/shared/src/geo-location.ts`, implemented by default as a
+  no-op `NullGeoLocationProvider`) — see
+  `docs/architecture/click-analytics.md`.
 - **packages/validation** holds Zod schemas so the same validation rules
   can be reused by the API (server-side enforcement) and, if useful later,
   by the dashboard for client-side form validation — without duplicating
@@ -143,11 +152,14 @@ session model and the tradeoffs this accepts.
   `docs/compliance/google-transparent-tracker.md`.
 - **SSL/TLS certificate provisioning** remains unimplemented (`sslStatus`
   stays `NOT_CONFIGURED`, not fabricated).
-- **Click/conversion analytics dashboards** are not built; the schema
-  exists and Phase 3 now writes to `Click`/`BotEvent`, but reporting on
-  top of that data is Phase 4 / Phase 10. Browser/OS/geo enrichment on
-  `Click` rows is also deferred to Phase 4 — no user-agent-parsing or
-  geo-lookup capability exists yet.
+- **Click analytics (Phase 4)** is implemented — a read-only, organization-scoped
+  analytics API (`/api/v1/organizations/:organizationId/analytics/clicks/...`)
+  and an `/analytics` dashboard page, backed by real PostgreSQL aggregation
+  over `Click`. `Click` rows now also carry real User-Agent-derived
+  enrichment (device type/browser/OS) written by `apps/tracker`, and an
+  optional, pluggable geo-location provider (no-op by default — see
+  `docs/architecture/click-analytics.md`). Conversion analytics remains
+  out of scope (Phase 7/10 — `Conversion` is still schema-only).
 - **Real bot detection** is not built. `BotEvent` schema and
   `BotDetectionEngine` interface exist and are now actually written to by
   Phase 3's tracker, but via `HeuristicBotDetectionEngine` — an explicitly

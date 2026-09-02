@@ -101,6 +101,53 @@ export interface ReferralConfiguration {
   createdAt: string;
 }
 
+export type TimeseriesBucket = "hour" | "day" | "week";
+
+export interface AnalyticsRange {
+  from: string;
+  to: string;
+  timezone: string;
+}
+
+export interface ClickSummary {
+  totalClicks: number;
+  humanClicks: number;
+  botClicks: number;
+  suspiciousClicks: number;
+  unknownClicks: number;
+  /** Unique visitors estimated over the ENTIRE requested date range. Not
+   * comparable to ClickTimeseriesPoint.uniqueClicksInBucket — see
+   * docs/architecture/click-analytics.md#unique-click-methodology. */
+  uniqueClicksInRange: number;
+  botPercentage: number;
+}
+
+export interface ClickTimeseriesPoint {
+  /** Local wall-clock start of this bucket in the requested timezone — see
+   * docs/architecture/click-analytics.md for why this intentionally has no
+   * "Z"/UTC marker. */
+  bucket: string;
+  clicks: number;
+  humanClicks: number;
+  botClicks: number;
+  /** Unique visitors estimated WITHIN THIS BUCKET only — a visitor
+   * appearing in two buckets counts once in each. Summing this field
+   * across buckets does NOT equal ClickSummary.uniqueClicksInRange for
+   * the same period. */
+  uniqueClicksInBucket: number;
+}
+
+export interface ClickBreakdownRow {
+  key: string;
+  label: string;
+  clicks: number;
+  humanClicks: number;
+  botClicks: number;
+  /** Same range-wide window as ClickSummary.uniqueClicksInRange, scoped to
+   * this row's group. */
+  uniqueClicksInRange: number;
+}
+
 export interface AuditLog {
   id: string;
   action: string;

@@ -3,11 +3,14 @@
 AdstrackIO is a performance marketing / attribution / click-tracking
 platform, built toward Google Transparent Click Tracker certification.
 
-**Current milestone: Phase 3 — Transparent Click Tracker.** Phase 1
-established the monorepo, core data model, authentication,
-organizations/roles, and the API/dashboard foundation. Phase 2 (Domain
-Manager) added real DNS-verified tracking domains. Phase 3 adds the real
-click-redirect endpoint (`apps/tracker`). See
+**Current milestone: Phase 4 — Click Analytics.** Phase 1 established the
+monorepo, core data model, authentication, organizations/roles, and the
+API/dashboard foundation. Phase 2 (Domain Manager) added real
+DNS-verified tracking domains. Phase 3 added the real click-redirect
+endpoint (`apps/tracker`). Phase 4 adds real User-Agent/geo enrichment on
+`Click` rows and a read-only, organization-scoped click analytics API +
+dashboard on top of Phase 3's data — see
+`docs/architecture/click-analytics.md`. See
 `docs/architecture/overview.md` for what's implemented vs. deliberately
 deferred, and `docs/compliance/google-transparent-tracker.md` — **no
 certification has been obtained or claimed.**
@@ -177,9 +180,23 @@ server-configured Safe Page instead, using an explicitly-provisional
 heuristic bot detector. Every resolved request is logged as a `Click` +
 `BotEvent`. See `docs/compliance/google-transparent-tracker.md` for the
 full architecture and its accepted tradeoffs, and
-`docs/architecture/security.md` for its security properties. **Phase 4
-(Click Analytics) is not implemented** — no reporting UI, no
-browser/OS/geo enrichment on `Click` rows.
+`docs/architecture/security.md` for its security properties.
+
+**Phase 4 (Click Analytics) is implemented**: `Click` rows now carry real
+User-Agent-derived enrichment (device type, browser, OS) and an optional,
+pluggable geo-location provider (a no-op by default — no geo data unless
+an operator configures a real provider). A read-only, authenticated,
+organization-scoped analytics API
+(`/api/v1/organizations/:organizationId/analytics/clicks/...` — summary,
+timeseries, and by-campaign/link/domain/referrer/device/browser/os/country
+breakdowns) is backed entirely by PostgreSQL aggregation, and an
+`/analytics` dashboard page consumes it. "Unique clicks" is a documented,
+privacy-conscious estimate — not a guarantee of distinct visitors. See
+`docs/architecture/click-analytics.md` for the full design (metric
+definitions, unique-click methodology, timezone handling, the GeoIP
+abstraction, privacy model, and current limitations). This phase does not
+change Phase 3's redirect/bot-routing behavior, and does not add or claim
+Google Transparent Click Tracker certification.
 
 Phase 5 onward (Bot Detection Integration, Campaign Manager, Conversion
 Tracking, Rules & Routing Engine, Affiliate/Partner System, Attribution &

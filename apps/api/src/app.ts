@@ -13,6 +13,7 @@ import { registerCampaignRoutes } from "./modules/campaigns/campaigns.routes.js"
 import { registerTrackingLinkRoutes } from "./modules/tracking-links/tracking-links.routes.js";
 import { registerReferralRoutes } from "./modules/referrals/referrals.routes.js";
 import { registerAuditLogRoutes } from "./modules/audit-logs/audit-logs.routes.js";
+import { registerAnalyticsRoutes } from "./modules/analytics/analytics.routes.js";
 
 export interface BuildAppOptions {
   env: Env;
@@ -48,6 +49,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       await registerTrackingLinkRoutes(v1);
       await registerReferralRoutes(v1);
       await registerAuditLogRoutes(v1);
+      await registerAnalyticsRoutes(v1);
     },
     { prefix: "/api/v1" },
   );

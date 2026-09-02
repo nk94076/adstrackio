@@ -5,3 +5,5 @@ export * from "./transparent-redirect.js";
 export * from "./tracking-resolver.js";
 export * from "./bot-detection.js";
 export * from "./ip-hash.js";
+export * from "./user-agent.js";
+export * from "./geo-location.js";
