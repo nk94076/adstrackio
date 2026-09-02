@@ -2,9 +2,37 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { getEnv } from "@adstrackio/config";
 import { prisma } from "@adstrackio/database";
+import type { Prisma } from "@adstrackio/database";
 import { buildTrackerApp } from "../src/app.js";
 import { resetDatabase } from "./db-reset.js";
 import { createTrackerFixture } from "./fixtures.js";
+
+/** Directly inserts a RoutingRule (Phase 8) against a fixture's campaign —
+ * apps/tracker has no CRUD endpoints of its own, same rationale as
+ * createTrackerFixture's own doc comment. */
+async function createRoutingRule(
+  organizationId: string,
+  campaignId: string,
+  overrides: {
+    priority?: number;
+    conditions?: unknown[];
+    action?: "TARGET" | "SAFE_PAGE" | "BLOCK";
+    status?: "ACTIVE" | "INACTIVE";
+    name?: string;
+  } = {},
+) {
+  return prisma.routingRule.create({
+    data: {
+      organizationId,
+      campaignId,
+      name: overrides.name ?? "Test rule",
+      status: overrides.status ?? "ACTIVE",
+      priority: overrides.priority ?? 1,
+      conditions: (overrides.conditions ?? []) as Prisma.InputJsonValue,
+      action: overrides.action ?? "BLOCK",
+    },
+  });
+}
 
 /**
  * Full real-Postgres integration suite for the Phase 3 transparent
@@ -858,4 +886,237 @@ describe("malicious/conflicting headers and query parameters (Phase 5)", () => {
     expect(response.statusCode).toBe(302);
     expect(response.headers.location).toBe(target);
   });
+});
+
+describe("Rules & Routing Engine (Phase 8)", () => {
+  it("a matching rule routes HUMAN traffic to SAFE_PAGE, overriding the campaign's TARGET default", async () => {
+    const fixture = await createTrackerFixture({ safePageUrl: "https://safe.example.com/" });
+    await createRoutingRule(fixture.organizationId, fixture.campaignId, {
+      action: "SAFE_PAGE",
+      conditions: [],
+    });
+
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent("https://example.com/offer")}`,
+    );
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe("https://safe.example.com/");
+  });
+
+  it("a matching rule routes HUMAN traffic to BLOCK, returning a controlled 404", async () => {
+    const fixture = await createTrackerFixture();
+    await createRoutingRule(fixture.organizationId, fixture.campaignId, {
+      action: "BLOCK",
+      conditions: [],
+    });
+
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent("https://example.com/offer")}`,
+    );
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("a matching TARGET rule still follows the request's own transparent redirection_url, never a rule-configured URL (Phase 3 safety)", async () => {
+    const fixture = await createTrackerFixture();
+    const target = "https://example.com/offer?utm_source=ad";
+    await createRoutingRule(fixture.organizationId, fixture.campaignId, {
+      action: "TARGET",
+      conditions: [{ field: "DEVICE_TYPE", operator: "NOT_EQUALS", value: "TABLET" }],
+    });
+
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent(target)}`,
+    );
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe(target);
+  });
+
+  it("a non-matching rule falls through to the campaign's default (TARGET) for HUMAN traffic", async () => {
+    const fixture = await createTrackerFixture();
+    const target = "https://example.com/offer";
+    await createRoutingRule(fixture.organizationId, fixture.campaignId, {
+      action: "BLOCK",
+      conditions: [{ field: "COUNTRY", operator: "EQUALS", value: "US" }],
+    });
+
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent(target)}`,
+    );
+    // No CDN geo header is present in this test request, so `country` is
+    // null and the COUNTRY condition never matches (see
+    // packages/shared/src/routing-rules.ts's fail-closed-on-unknown
+    // behavior) — the rule is correctly skipped.
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe(target);
+  });
+
+  it("a matching COUNTRY rule fires when a known CDN geo header is present", async () => {
+    const fixture = await createTrackerFixture();
+    await createRoutingRule(fixture.organizationId, fixture.campaignId, {
+      action: "BLOCK",
+      conditions: [{ field: "COUNTRY", operator: "EQUALS", value: "US" }],
+    });
+
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent("https://example.com/offer")}`,
+      { "cf-ipcountry": "US" },
+    );
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("BOT traffic is never subject to a routing rule, even one unconditionally matching everything", async () => {
+    const fixture = await createTrackerFixture({ safePageUrl: "https://safe.example.com/" });
+    await createRoutingRule(fixture.organizationId, fixture.campaignId, {
+      action: "TARGET",
+      conditions: [],
+    });
+
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent("https://example.com/offer")}`,
+      { "user-agent": BOT_UA },
+    );
+    // BOT_POLICY precedence wins unconditionally: SAFE_PAGE, never the
+    // rule's TARGET action.
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe("https://safe.example.com/");
+  });
+
+  it("evaluates rules in ascending priority order — the lower-numbered rule wins when both match", async () => {
+    const fixture = await createTrackerFixture();
+    await createRoutingRule(fixture.organizationId, fixture.campaignId, {
+      priority: 5,
+      action: "BLOCK",
+      conditions: [],
+      name: "low priority",
+    });
+    await createRoutingRule(fixture.organizationId, fixture.campaignId, {
+      priority: 1,
+      action: "TARGET",
+      conditions: [],
+      name: "high priority",
+    });
+
+    const target = "https://example.com/offer";
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent(target)}`,
+    );
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe(target);
+  });
+
+  it("an INACTIVE rule is never evaluated", async () => {
+    const fixture = await createTrackerFixture();
+    await createRoutingRule(fixture.organizationId, fixture.campaignId, {
+      action: "BLOCK",
+      conditions: [],
+      status: "INACTIVE",
+    });
+
+    const target = "https://example.com/offer";
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent(target)}`,
+    );
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe(target);
+  });
+
+  it("a rule on a different campaign is never evaluated for this campaign's traffic (isolation)", async () => {
+    const fixtureA = await createTrackerFixture();
+    const fixtureB = await createTrackerFixture();
+    await createRoutingRule(fixtureB.organizationId, fixtureB.campaignId, {
+      action: "BLOCK",
+      conditions: [],
+    });
+
+    const target = "https://example.com/offer";
+    const response = await hit(
+      fixtureA.hostname,
+      fixtureA.slug,
+      `?redirection_url=${encodeURIComponent(target)}`,
+    );
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe(target);
+  });
+
+  it("matches a DEVICE_TYPE condition derived from the User-Agent", async () => {
+    const fixture = await createTrackerFixture();
+    await createRoutingRule(fixture.organizationId, fixture.campaignId, {
+      action: "BLOCK",
+      conditions: [{ field: "DEVICE_TYPE", operator: "EQUALS", value: "MOBILE" }],
+    });
+    const mobileUa =
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
+
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent("https://example.com/offer")}`,
+      { "user-agent": mobileUa },
+    );
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("matches a REFERRER_HOST condition derived from the Referer header", async () => {
+    const fixture = await createTrackerFixture();
+    await createRoutingRule(fixture.organizationId, fixture.campaignId, {
+      action: "BLOCK",
+      conditions: [{ field: "REFERRER_HOST", operator: "EQUALS", value: "malicious-referrer.example" }],
+    });
+
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent("https://example.com/offer")}`,
+      { referer: "https://malicious-referrer.example/page" },
+    );
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("a rule beyond the resolver's MAX_ACTIVE_RULES_PER_CAMPAIGN bound is never fetched or evaluated", async () => {
+    const fixture = await createTrackerFixture();
+    // Create exactly 50 unconditional-non-matching rules at priorities
+    // 1-50 (all TARGET, so even if evaluated they wouldn't change the
+    // outcome), then one more at priority 51 that WOULD match and BLOCK
+    // if it were ever considered. The resolver's `take: 50` ordered by
+    // priority ascending must exclude it.
+    for (let priority = 1; priority <= 50; priority += 1) {
+      await createRoutingRule(fixture.organizationId, fixture.campaignId, {
+        priority,
+        action: "TARGET",
+        conditions: [{ field: "COUNTRY", operator: "EQUALS", value: "ZZ" }], // never matches
+        name: `filler ${priority}`,
+      });
+    }
+    await createRoutingRule(fixture.organizationId, fixture.campaignId, {
+      priority: 51,
+      action: "BLOCK",
+      conditions: [],
+      name: "beyond bound",
+    });
+
+    const target = "https://example.com/offer";
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent(target)}`,
+    );
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe(target);
+  }, 30_000);
 });

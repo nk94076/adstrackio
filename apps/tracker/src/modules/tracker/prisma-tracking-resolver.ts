@@ -1,10 +1,34 @@
 import type { PrismaClient } from "@adstrackio/database";
 import {
+  MAX_ACTIVE_RULES_PER_CAMPAIGN,
   TrackingResolutionError,
+  type RoutingCondition,
+  type RoutingRuleInput,
   type TrackingResolutionRequest,
   type TrackingResolutionResult,
   type TrackingResolver,
 } from "@adstrackio/shared";
+
+/**
+ * Rules are already validated (typed fields/operators, bounded array
+ * lengths) by packages/validation/src/routing-rules.ts at write time —
+ * this cast trusts that invariant rather than re-validating a JSONB column
+ * on every redirect, the same trust boundary conversions.service.ts
+ * already extends to Conversion.metadata elsewhere in this codebase.
+ */
+function toRoutingRuleInput(row: {
+  id: string;
+  priority: number;
+  conditions: unknown;
+  action: string;
+}): RoutingRuleInput {
+  return {
+    id: row.id,
+    priority: row.priority,
+    conditions: row.conditions as RoutingCondition[],
+    action: row.action as RoutingRuleInput["action"],
+  };
+}
 
 /**
  * Real (Phase 3) implementation of TrackingResolver, backed by Postgres.
@@ -72,6 +96,18 @@ export class PrismaTrackingResolver implements TrackingResolver {
       );
     }
 
+    // Bounded at the source (`take`), not just defensively re-bounded by
+    // evaluateRules downstream — this keeps the query itself cheap under a
+    // campaign with far more historical (mostly INACTIVE) rules than the
+    // active limit. Ordered by priority so the list is already in
+    // evaluation order by the time it reaches resolveRoutingDecision.
+    const routingRules = await this.prisma.routingRule.findMany({
+      where: { campaignId: link.campaignId, status: "ACTIVE" },
+      orderBy: { priority: "asc" },
+      take: MAX_ACTIVE_RULES_PER_CAMPAIGN,
+      select: { id: true, priority: true, conditions: true, action: true },
+    });
+
     return {
       trackingLinkId: link.id,
       campaignId: link.campaignId,
@@ -81,6 +117,7 @@ export class PrismaTrackingResolver implements TrackingResolver {
         suspiciousTrafficPolicy: link.campaign.suspiciousTrafficPolicy,
         unknownTrafficPolicy: link.campaign.unknownTrafficPolicy,
       },
+      routingRules: routingRules.map(toRoutingRuleInput),
     };
   }
 }
