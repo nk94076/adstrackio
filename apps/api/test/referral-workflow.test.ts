@@ -282,4 +282,101 @@ describe("referral configuration + proof workflow", () => {
     });
     expect(updated.status).toBe("ACTIVE");
   });
+
+  it("does not let two concurrent reviews of the same proof both succeed (no split-brain APPROVED+REJECTED)", async () => {
+    const { cookie, organizationId } = await setupOrg();
+
+    const config = (
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/referral-configurations`,
+        headers: { cookie },
+        payload: { type: "CUSTOM_PARTNER_ATTRIBUTION", customReferrerValue: "partner-race" },
+      })
+    ).json().referralConfiguration;
+
+    const proof = (
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/referral-configurations/${config.id}/proofs`,
+        headers: { cookie },
+        payload: { evidenceUrl: "https://example.com/race-proof.pdf" },
+      })
+    ).json().proof;
+
+    // Fire an APPROVE and a REJECT at the same proof simultaneously. Before
+    // the fix (a separate read-check followed by an unconditional update),
+    // both could observe reviewStatus=PENDING and both would "succeed",
+    // silently overwriting one decision with the other. The fix folds the
+    // PENDING check into the UPDATE's WHERE clause so Postgres's row lock
+    // makes the two requests mutually exclusive: exactly one must win.
+    const [approveResponse, rejectResponse] = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/referral-configurations/${config.id}/proofs/${proof.id}/review`,
+        headers: { cookie },
+        payload: { decision: "APPROVED" },
+      }),
+      app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/referral-configurations/${config.id}/proofs/${proof.id}/review`,
+        headers: { cookie },
+        payload: { decision: "REJECTED", rejectionReason: "racing with an approval" },
+      }),
+    ]);
+
+    const statuses = [approveResponse.statusCode, rejectResponse.statusCode].sort();
+    expect(statuses).toEqual([200, 409]);
+
+    const finalProof = await prisma.referralProof.findUniqueOrThrow({ where: { id: proof.id } });
+    // Whichever request actually committed first wins; what matters is
+    // there's no split state and the loser was told it lost.
+    expect(["APPROVED", "REJECTED"]).toContain(finalProof.reviewStatus);
+    if (approveResponse.statusCode === 200) {
+      expect(finalProof.reviewStatus).toBe("APPROVED");
+    } else {
+      expect(finalProof.reviewStatus).toBe("REJECTED");
+    }
+  });
+
+  it("rejects a second review attempt after a proof has already been decided", async () => {
+    const { cookie, organizationId } = await setupOrg();
+
+    const config = (
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/referral-configurations`,
+        headers: { cookie },
+        payload: { type: "CUSTOM_PARTNER_ATTRIBUTION", customReferrerValue: "partner-double" },
+      })
+    ).json().referralConfiguration;
+
+    const proof = (
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/referral-configurations/${config.id}/proofs`,
+        headers: { cookie },
+        payload: { evidenceUrl: "https://example.com/double-review.pdf" },
+      })
+    ).json().proof;
+
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/v1/organizations/${organizationId}/referral-configurations/${config.id}/proofs/${proof.id}/review`,
+      headers: { cookie },
+      payload: { decision: "APPROVED" },
+    });
+    expect(first.statusCode).toBe(200);
+
+    const second = await app.inject({
+      method: "POST",
+      url: `/api/v1/organizations/${organizationId}/referral-configurations/${config.id}/proofs/${proof.id}/review`,
+      headers: { cookie },
+      payload: { decision: "REJECTED", rejectionReason: "too late" },
+    });
+    expect(second.statusCode).toBe(409);
+
+    const finalProof = await prisma.referralProof.findUniqueOrThrow({ where: { id: proof.id } });
+    expect(finalProof.reviewStatus).toBe("APPROVED");
+  });
 });

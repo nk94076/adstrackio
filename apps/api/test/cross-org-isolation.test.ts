@@ -319,6 +319,61 @@ describe("cross-organization isolation (IDOR)", () => {
     expect(response.json().error.code).toBe("VALIDATION_ERROR");
   });
 
+  it("rejects re-pointing Org A's own campaign at Org B's tracking domain/destination via PATCH", async () => {
+    const { ownerA, orgA, orgB, ownerB, campaignA } = await setupTwoOrgs();
+
+    const domainB = (
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${orgB}/domains`,
+        headers: { cookie: ownerB.cookie },
+        payload: { hostname: "b-patch.example.com" },
+      })
+    ).json().domain;
+
+    const destinationB = (
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${orgB}/destinations`,
+        headers: { cookie: ownerB.cookie },
+        payload: { name: "B Destination Patch", url: "https://b-dest-patch.example.com" },
+      })
+    ).json().destination;
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/organizations/${orgA}/campaigns/${campaignA.id}`,
+      headers: { cookie: ownerA.cookie },
+      payload: { trackingDomainId: domainB.id, destinationId: destinationB.id },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("rejects re-pointing Org A's own tracking link at Org B's destination via PATCH", async () => {
+    const { ownerA, orgA, orgB, ownerB, trackingLinkA } = await setupTwoOrgs();
+
+    const destinationB = (
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${orgB}/destinations`,
+        headers: { cookie: ownerB.cookie },
+        payload: { name: "B Destination Patch 2", url: "https://b-dest-patch2.example.com" },
+      })
+    ).json().destination;
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/organizations/${orgA}/tracking-links/${trackingLinkA.id}`,
+      headers: { cookie: ownerA.cookie },
+      payload: { destinationId: destinationB.id },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error.code).toBe("VALIDATION_ERROR");
+  });
+
   it("never returns Org B's resources when Org B legitimately lists its own (sanity check for false negatives)", async () => {
     const { ownerB, orgB } = await setupTwoOrgs();
 
