@@ -135,8 +135,10 @@ mechanisms rather than one:
 
    validated to reference a partner already on the link's own campaign's
    roster (`assertAffiliatePartnerAssignable`,
-   `apps/api/src/modules/shared/org-scoped-refs.ts`, called from
-   `tracking-links.service.ts`'s create/update paths).
+   `apps/api/src/modules/shared/org-scoped-refs.ts`, called from inside
+   the same transaction as `tracking-links.service.ts`'s create/update
+   writes — see "Concurrency" under Partner lifecycle below for why this
+   must not run before that transaction starts).
 
 This satisfies the letter of "do not blindly create both [join tables]"
 (only `CampaignAffiliatePartner` exists) while still giving every
@@ -218,10 +220,21 @@ can be created directly as `ACTIVE`, skipping `PENDING`, but never created
 already `PAUSED`/`ARCHIVED`). `ARCHIVED` is terminal — no transition leads
 out of it.
 
-**Archived partners cannot receive new assignments.**
-`assignAffiliatePartnerToCampaign` locks the partner row
-(`SELECT ... FOR UPDATE`), and if its status is `ARCHIVED`, 409s before
-creating the roster row — covered by a dedicated test.
+**Archived partners cannot receive new assignments — at either level.**
+`assignAffiliatePartnerToCampaign` (campaign roster) and
+`assertAffiliatePartnerAssignable` (tracking-link attribution, called from
+inside `createTrackingLink`/`updateTrackingLink`'s own transaction — see
+"Partner assignment" above) both lock the partner row
+(`SELECT ... FOR UPDATE`) and 409 if its status is `ARCHIVED` before
+writing. The tracking-link path was the subject of a CTO review finding on
+PR #10: it originally validated the partner against the top-level
+`PrismaClient` *before* the transaction that wrote the `TrackingLink` row
+— a check-then-act race under which a concurrent `archiveAffiliatePartner`
+could commit between the check and the write (and the check didn't verify
+`ARCHIVED` status at all, so even the non-concurrent case could slip
+through). Fixed by moving the check inside the same transaction and
+locking the same `AffiliatePartner` row the other two lock sites already
+lock — see "Concurrency" immediately below.
 
 **Historical attribution survives archival.** Archiving a partner never
 touches `CampaignAffiliatePartner` rows or any `Click`/`TrackingLink` that
@@ -252,9 +265,27 @@ is always idempotent success. The same lock also serializes a concurrent
 its own `SELECT ... FOR UPDATE` on the partner row before deciding whether
 the assignment is allowed, so whichever transaction commits first is
 authoritative and the other observes its result, never a stale read.
+
+**A third lock site closes the same race for tracking-link attribution.**
+`assertAffiliatePartnerAssignable` (`org-scoped-refs.ts`) takes the
+identical `SELECT ... FOR UPDATE` lock on the same `AffiliatePartner` row,
+called from inside `createTrackingLink`/`updateTrackingLink`'s own
+transaction before the `TrackingLink` write. All three lock sites —
+partner lifecycle transitions, campaign-roster assignment, and
+tracking-link attribution — target the same row, so Postgres serializes
+any two of them that race on the same partner: whichever transaction's
+lock is granted first runs to completion before the other's `SELECT ...
+FOR UPDATE` can even return, so the loser always observes the winner's
+already-committed status, never a stale read from before the lock was
+acquired. There is no interleaving under which a concurrent archive and a
+concurrent tracking-link attribution can both believe the partner is
+`ACTIVE`.
+
 Covered by dedicated concurrent activate+activate, pause+pause,
-activate+pause, duplicate-assignment, and archive+assignment integration
-tests (`apps/api/test/affiliate-partners.test.ts`).
+activate+pause, duplicate-assignment, archive+assignment, and (the fix
+above) archive-vs-tracking-link-attribution (both create and update, plus
+a fully deterministic sequential proof) integration tests
+(`apps/api/test/affiliate-partners.test.ts`).
 
 **Duplicate assignment is idempotent, not a 409.** A second concurrent (or
 sequential) "assign partner X to campaign Y" call, when X is already
@@ -473,24 +504,28 @@ between "Tracking Links" and "Conversions."
   schema validation including the explicit mass-assignment test
   (`organizationId`/`createdBy`/`affiliatePartnerId` in the request body
   are silently stripped, not honored).
-- `apps/api/test/affiliate-partners.test.ts` (37 tests) — partner CRUD,
+- `apps/api/test/affiliate-partners.test.ts` (41 tests) — partner CRUD,
   externalId uniqueness (same-org rejected, cross-org allowed), RBAC
   (VIEWER/MEMBER/ADMIN/OWNER), organization isolation/IDOR (cross-org
   read, cross-org assign in both directions, cross-org route access),
   campaign assignment (valid, idempotent duplicate, cross-campaign 404,
   archived-partner-rejected), attribution (tracking-link roster
-  enforcement, click attribution via the tracker-simulating test helper,
+  enforcement, an explicit ACTIVE-partner success path via both create and
+  update, click attribution via the tracker-simulating test helper,
   conversion attribution derived through click with forged-attribution
   attempt proven inert), historical attribution surviving archival,
-  lifecycle/assignment concurrency (duplicate assignment race,
-  activate+activate, pause+pause, activate+pause, archive+assignment
-  race), and two direct-database trigger tests that bypass the service
-  layer entirely.
-- `apps/tracker/test/tracker.routes.test.ts` — 4 new tests: a click
+  lifecycle/assignment/attribution concurrency (duplicate assignment race,
+  activate+activate, pause+pause, activate+pause, archive+assignment race,
+  and the archive-vs-tracking-link-attribution race fix — a deterministic
+  sequential proof plus concurrent create and update races), and two
+  direct-database trigger tests that bypass the service layer entirely.
+- `apps/tracker/test/tracker.routes.test.ts` — 5 new tests: a click
   through an affiliate-attributed link carries that partner's id; a click
   through an ordinary link has `null`; a forged `affiliatePartnerId` query
   parameter has no effect; the visible transparent redirect destination is
-  unchanged for an affiliate-attributed link. The full pre-existing
+  unchanged for an affiliate-attributed link; a BOT-classified request
+  through an affiliate-attributed link still routes to `SAFE_PAGE` (never
+  `TARGET`) while attribution still happens. The full pre-existing
   transparent-redirect, bot-routing, and Phase 8 routing-rule regression
   suites in the same file were re-run unmodified and still pass.
 - `apps/tracker/test/fixtures.ts` gained an opt-in

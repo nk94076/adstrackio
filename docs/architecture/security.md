@@ -572,35 +572,49 @@ this section covers its security-relevant properties specifically.
   get), verified both by application-level immutability (no update path
   exists) and a direct-database test that attempts the mutation via
   Prisma, bypassing the service layer.
-- **Archived partners cannot receive new assignments, but historical
-  attribution is never deleted or nulled out.** `assignAffiliatePartnerToCampaign`
-  locks the partner row and 409s if its status is `ARCHIVED` before
-  creating a roster row. Archiving a partner touches no other table — no
-  cascade, no cleanup job — so a `Click`/`Conversion`/
+- **Archived partners cannot receive new assignments — at either level —
+  but historical attribution is never deleted or nulled out.**
+  `assignAffiliatePartnerToCampaign` (campaign roster) and
+  `assertAffiliatePartnerAssignable` (tracking-link attribution, called
+  from inside `createTrackingLink`/`updateTrackingLink`'s own transaction)
+  each lock the partner row and 409 if its status is `ARCHIVED` before
+  writing. The tracking-link path was a CTO review finding on PR #10: it
+  originally validated the partner (organization + roster membership, but
+  not `ARCHIVED` status at all) against the top-level `PrismaClient`
+  *before* the transaction that wrote the `TrackingLink` row — a
+  check-then-act race under which a concurrent `archiveAffiliatePartner`
+  could commit between the check and the write, and even the
+  non-concurrent case could slip an already-archived partner through.
+  Fixed by moving the check inside the same transaction and locking the
+  same `AffiliatePartner` row the other two lock sites already lock (see
+  below). Archiving a partner touches no other table regardless — no
+  cascade, no cleanup job — so a `Click`/`Conversion`/`TrackingLink`/
   `CampaignAffiliatePartner` row that already references an archived
   partner keeps that reference exactly as before, and `GET
-  .../affiliate-partners/:partnerId` continues to return it. Covered by a
-  dedicated test that archives a partner with an existing assignment and
-  attributed click, then re-reads all three.
+  .../affiliate-partners/:partnerId` continues to return it. Covered by
+  dedicated tests that archive a partner with an existing assignment and
+  attributed click/tracking-link, then re-read all of them.
 - **Status can never be forced through a generic update endpoint** — the
   same convention Campaign/TrackingLink/Conversion/RoutingRule already
   established: no `PATCH` accepts a `status` field (silently ignored, not
   rejected); only the explicit `POST .../activate`/`.../pause`/
   `.../archive` endpoints (no request body) change it.
-- **Lifecycle and assignment concurrency use `SELECT ... FOR UPDATE` row
-  locking, applied proactively from the start** — not rediscovered as a
-  bug this time. `transitionAffiliatePartnerStatus` and
-  `assignAffiliatePartnerToCampaign` both lock the affected
-  `AffiliatePartner` row before deciding an outcome, so: (a) two
+- **Lifecycle, assignment, and attribution concurrency all use
+  `SELECT ... FOR UPDATE` row locking on the same `AffiliatePartner` row.**
+  `transitionAffiliatePartnerStatus`, `assignAffiliatePartnerToCampaign`,
+  and (per the fix above) `assertAffiliatePartnerAssignable` all lock the
+  affected `AffiliatePartner` row before deciding an outcome, so: (a) two
   concurrent calls requesting the *same* target lifecycle state are both
   idempotent successes, never a spurious `409`; (b) a concurrent
-  `archive` and `assign` on the same partner correctly serialize —
-  whichever transaction commits first is authoritative, and the loser
-  observes that committed result rather than a stale read, never
-  producing an active assignment on an archived partner or vice versa.
-  Covered by dedicated concurrent activate+activate, pause+pause,
-  activate+pause, duplicate-assignment, and archive+assignment
-  integration tests.
+  `archive` and a concurrent `assign` (campaign roster) or `attribute`
+  (tracking link) on the same partner correctly serialize — whichever
+  transaction commits first is authoritative, and the loser observes that
+  committed result rather than a stale read, never producing an active
+  assignment or attribution on an archived partner. Covered by dedicated
+  concurrent activate+activate, pause+pause, activate+pause,
+  duplicate-assignment, archive+assignment, and
+  archive-vs-tracking-link-attribution (a deterministic sequential proof
+  plus concurrent create and update races) integration tests.
 - **Duplicate assignment is idempotent, not an error.** A second
   concurrent or sequential "assign partner X to campaign Y" call, when X
   is already assigned to Y, returns the existing row rather than a `409`
