@@ -13,3 +13,4 @@ export * from "./user-agent.js";
 export * from "./geo-location.js";
 export * from "./routing-rules.js";
 export * from "./routing-signals.js";
+export * from "./affiliate-partner-lifecycle.js";
