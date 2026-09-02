@@ -10,6 +10,10 @@ export interface TrackerFixture {
   destinationId: string;
   trackingLinkId: string;
   slug: string;
+  /** Set only when `withAffiliatePartner` was requested (Phase 9:
+   * Affiliate/Partner System) — the partner the fixture's TrackingLink
+   * deterministically attributes to, already on the campaign's roster. */
+  affiliatePartnerId: string | null;
 }
 
 export interface CreateTrackerFixtureOptions {
@@ -26,6 +30,11 @@ export interface CreateTrackerFixtureOptions {
   suspiciousTrafficPolicy?: BotTrafficPolicyAction;
   /** Defaults to TARGET (see Campaign.unknownTrafficPolicy). */
   unknownTrafficPolicy?: BotTrafficPolicyAction;
+  /** Phase 9: Affiliate/Partner System — when true, creates an
+   * AffiliatePartner, assigns it to the fixture's campaign roster, and
+   * attributes the fixture's TrackingLink to it. Defaults to false (an
+   * ordinary non-affiliate link, affiliatePartnerId null). */
+  withAffiliatePartner?: boolean;
 }
 
 /**
@@ -78,6 +87,17 @@ export async function createTrackerFixture(
     },
   });
 
+  let affiliatePartnerId: string | null = null;
+  if (options.withAffiliatePartner) {
+    const partner = await prisma.affiliatePartner.create({
+      data: { organizationId: organization.id, name: "Fixture Affiliate Partner", status: "ACTIVE" },
+    });
+    await prisma.campaignAffiliatePartner.create({
+      data: { organizationId: organization.id, campaignId: campaign.id, affiliatePartnerId: partner.id },
+    });
+    affiliatePartnerId = partner.id;
+  }
+
   const trackingLink = await prisma.trackingLink.create({
     data: {
       campaignId: campaign.id,
@@ -85,6 +105,7 @@ export async function createTrackerFixture(
       destinationId: destination.id,
       slug,
       status: linkStatus,
+      affiliatePartnerId,
     },
   });
 
@@ -96,5 +117,6 @@ export async function createTrackerFixture(
     destinationId: destination.id,
     trackingLinkId: trackingLink.id,
     slug,
+    affiliatePartnerId,
   };
 }

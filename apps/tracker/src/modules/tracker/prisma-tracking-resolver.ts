@@ -118,6 +118,10 @@ export class PrismaTrackingResolver implements TrackingResolver {
         unknownTrafficPolicy: link.campaign.unknownTrafficPolicy,
       },
       routingRules: routingRules.map(toRoutingRuleInput),
+      // Free — link.affiliatePartnerId is already present on the row the
+      // findUnique above fetched (Phase 9: Affiliate/Partner System), no
+      // extra query. See docs/architecture/affiliate-partners.md#tracker-performance.
+      affiliatePartnerId: link.affiliatePartnerId,
     };
   }
 }

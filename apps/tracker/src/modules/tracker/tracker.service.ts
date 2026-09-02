@@ -21,6 +21,11 @@ export interface RecordClickInput {
    * (never written to the database — see recordClick's doc comment). */
   ip: string;
   classification: BotClassificationResult;
+  /** The resolving TrackingLink's affiliatePartnerId (Phase 9:
+   * Affiliate/Partner System), or null for a non-affiliate link — copied
+   * straight from TrackingResolver's result by the route handler. There is
+   * no request-supplied value that can override this. */
+  affiliatePartnerId: string | null;
 }
 
 export interface RecordClickDependencies {
@@ -144,6 +149,7 @@ export async function recordClick(
         osVersion: deviceInfo.osVersion ?? undefined,
         botClassification: input.classification.classification,
         botScore: input.classification.score,
+        affiliatePartnerId: input.affiliatePartnerId ?? undefined,
       },
     });
 

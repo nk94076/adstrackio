@@ -259,6 +259,7 @@ export async function registerTrackerRoutes(
         ipHash,
         ip: request.ip,
         classification,
+        affiliatePartnerId: resolution.affiliatePartnerId,
       },
       {
         userAgentParser: options.userAgentParser,
