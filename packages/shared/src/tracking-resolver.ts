@@ -18,6 +18,7 @@
  * redirect to.
  */
 import type { BotTrafficPolicy } from "./bot-traffic-policy.js";
+import type { RoutingRuleInput } from "./routing-rules.js";
 
 export interface TrackingResolutionRequest {
   hostname: string;
@@ -35,6 +36,11 @@ export interface TrackingResolutionResult {
    * (Phase 5: Bot Detection Integration) — see
    * packages/shared/src/bot-traffic-policy.ts. */
   botTrafficPolicy: BotTrafficPolicy;
+  /** This campaign's ACTIVE routing rules (Phase 8: Rules & Routing
+   * Engine), already bounded to MAX_ACTIVE_RULES_PER_CAMPAIGN — see
+   * packages/shared/src/routing-rules.ts's resolveRoutingDecision, which
+   * consumes this list. Empty for a campaign with no rules configured. */
+  routingRules: RoutingRuleInput[];
 }
 
 /** Why resolution failed — lets callers map to the right HTTP response
