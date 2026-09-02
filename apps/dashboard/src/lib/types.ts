@@ -29,13 +29,22 @@ export interface OrganizationMember {
 export type DomainVerificationStatus = "PENDING" | "VERIFIED" | "FAILED";
 export type DomainSslStatus = "NOT_CONFIGURED" | "PENDING" | "ACTIVE" | "FAILED";
 
+export interface DomainVerificationInstructions {
+  recordType: "TXT";
+  recordName: string;
+  recordValue: string;
+}
+
 export interface TrackingDomain {
   id: string;
   hostname: string;
   verificationStatus: DomainVerificationStatus;
+  verificationRequestedAt: string | null;
+  verifiedAt: string | null;
   sslStatus: DomainSslStatus;
   isActive: boolean;
   createdAt: string;
+  verificationInstructions: DomainVerificationInstructions | null;
 }
 
 export interface Destination {
