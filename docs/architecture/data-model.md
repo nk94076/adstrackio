@@ -12,18 +12,18 @@ deliberately shaped for what comes later, but the behavior that would make
 it "live" isn't built yet. **FUTURE PHASE** — not started; named here only
 so the roadmap this schema was designed against is explicit.
 
-| Model | Purpose | Phase 1 status |
+| Model | Purpose | Status |
 | --- | --- | --- |
 | `User` | An individual account (email + password hash) | IMPLEMENTED |
 | `Organization` | A workspace/tenant | IMPLEMENTED |
 | `OrganizationMember` | Join table: user ↔ organization, with a role | IMPLEMENTED |
-| `TrackingDomain` | A hostname an organization tracks clicks on | IMPLEMENTED (Phase 2: Domain Manager) — real DNS TXT verification; activation gated on it. No redirect/routing behavior (FUTURE PHASE: Transparent Click Tracker) |
-| `Destination` | The business URL a campaign/link points to | IMPLEMENTED (CRUD + URL validation) |
-| `Campaign` | Groups tracking links under a name/status/budget | FOUNDATION ONLY — no routing logic (FUTURE PHASE: Rules & Routing Engine) |
-| `TrackingLink` | A routable slug on a domain, pointing at a destination | FOUNDATION ONLY — no live redirect (FUTURE PHASE: Transparent Click Tracker) |
-| `Click` | An individual inbound tracking event | FOUNDATION ONLY — schema only, nothing writes to this table yet (FUTURE PHASE: Transparent Click Tracker / Click Analytics) |
+| `TrackingDomain` | A hostname an organization tracks clicks on | IMPLEMENTED (Phase 2) — real DNS TXT verification; activation gated on it. Phase 3's tracker requires VERIFIED + active before serving traffic |
+| `Destination` | The business URL a campaign/link points to | IMPLEMENTED (CRUD + URL validation). Administrative/informational only for tracker purposes as of Phase 3 — see `TrackingLink` below |
+| `Campaign` | Groups tracking links under a name/status/budget; also carries the Phase 3 Safe Page URL | IMPLEMENTED (CRUD). `safePageUrl` is Phase 3's minimal bot-routing foundation, not a routing-rules engine (FUTURE PHASE: Rules & Routing Engine) |
+| `TrackingLink` | A routable slug on a domain | IMPLEMENTED (Phase 3) — `apps/tracker`'s `GET /:slug` resolves and redirects through this |
+| `Click` | An individual inbound tracking event | IMPLEMENTED (Phase 3) — written by the tracker on every resolved request. Browser/OS/geo enrichment deferred (FUTURE PHASE: Click Analytics) |
 | `Conversion` | A recorded conversion event | FOUNDATION ONLY — schema only, no postback ingestion (FUTURE PHASE: Conversion Tracking) |
-| `BotEvent` | A bot-detection verdict for a click | FOUNDATION ONLY — schema + integration boundary only, no detection engine wired in (FUTURE PHASE: Bot Detection Integration) |
+| `BotEvent` | A bot-detection verdict for a click | IMPLEMENTED (Phase 3) — written by the tracker via the explicitly-provisional `HeuristicBotDetectionEngine`; a real detection engine is FUTURE PHASE: Bot Detection Integration |
 | `ReferralConfiguration` | How referral/attribution is labeled for a campaign | IMPLEMENTED, including the approval gate (app + database level) |
 | `ReferralProof` | Evidence supporting a custom partner attribution config | IMPLEMENTED |
 | `AuditLog` | Append-only record of administrative actions | IMPLEMENTED |
@@ -64,15 +64,38 @@ These four models are deliberately kept as separate concerns:
 - **Destination** — the actual business URL (e.g. an offer page or app
   store link). Stored and normalized independently of any campaign so the
   same destination can be reused across campaigns/tracking links, and so
-  future attribution reporting can group by destination.
+  future attribution reporting can group by destination. **As of Phase 3,
+  a `TrackingLink.destinationId` is administrative/informational only** —
+  the live tracker route does not use it to choose a redirect target. See
+  "The transparent redirect parameter" below and
+  `docs/compliance/google-transparent-tracker.md` for why.
 - **Campaign** — the organizational/business grouping (name, status,
   budget, flight dates). A campaign optionally references a default
-  `TrackingDomain` and `Destination`, but does not itself resolve traffic.
+  `TrackingDomain` and `Destination`, and (Phase 3) carries `safePageUrl`
+  — the server-configured destination for traffic the tracker classifies
+  as a bot. `Campaign.status` does not currently gate traffic: only
+  `TrackingDomain` verification/activation and `TrackingLink.status` do.
 - **TrackingLink** — the actual routable unit: `(trackingDomainId, slug)`
-  is unique, and it points at one `Destination`. This is intentionally
-  *not* a redirect endpoint — it's a database row describing what a future
-  redirect *should* do. See `packages/shared/src/tracking-resolver.ts` for
-  the interface that will consume this data in Phase 3.
+  is unique. `apps/tracker`'s `GET /:slug` route resolves a request's
+  hostname+slug to this row via `TrackingResolver`
+  (`packages/shared/src/tracking-resolver.ts`,
+  `PrismaTrackingResolver` in `apps/tracker`) to establish identity and
+  organization ownership — but, per the Phase 3 architecture, does **not**
+  use `destinationId` to pick where to redirect.
+
+### The transparent redirect parameter (Phase 3)
+
+`apps/tracker`'s `GET /:slug?redirection_url=<url>` redirects to the
+**request's own `redirection_url` value** — validated by
+`validateTransparentRedirectUrl` (`packages/shared/src/transparent-redirect.ts`:
+http(s) only, no userinfo, no control characters, bounded length) — not to
+`TrackingLink.destinationId`'s stored `Destination`. This is a deliberate
+architectural choice for Google Transparent Click Tracker compliance
+(the destination must be visible in the URL, not hidden behind a backend
+ID) — see `docs/compliance/google-transparent-tracker.md` for the full
+rationale and its accepted tradeoffs. A request classified as a bot is
+redirected to `Campaign.safePageUrl` instead, or gets a controlled `404`
+if none is configured — never a silently-substituted destination.
 
 Splitting Destination from TrackingLink from Click matters for analytics:
 a Destination can be reused across many links; a TrackingLink can accrue
@@ -81,19 +104,21 @@ because the other does.
 
 ## Click, Conversion, BotEvent — event data
 
-These three models exist now so Phase 3 (Transparent Click Tracker),
-Phase 4 (Click Analytics), Phase 5 (Bot Detection Integration), and Phase 7
-(Conversion Tracking) can be built against a stable schema. **No code
-writes to these tables in Phase 1** — creating rows here would be
-implementing functionality (click recording, bot scoring) ahead of the
-phase that owns it.
+These three models were designed in Phase 1 so Phase 3 (Transparent Click
+Tracker), Phase 4 (Click Analytics), Phase 5 (Bot Detection Integration),
+and Phase 7 (Conversion Tracking) could be built against a stable schema.
+Phase 3 now writes `Click` and `BotEvent` rows on every resolved tracker
+request (`apps/tracker/src/modules/tracker/tracker.service.ts`);
+`Conversion` remains schema-only — no postback ingestion exists yet
+(Phase 7).
 
 Privacy-by-design notes on `Click`:
 
-- No raw IP address is stored — only `ipHash`, intended to be a one-way,
-  salted hash computed by the future ingestion path. This satisfies the
-  "privacy-aware network identifier" requirement without ever persisting a
-  directly-identifying value.
+- No raw IP address is stored — only `ipHash`, a one-way, salted hash
+  computed by `packages/shared/src/ip-hash.ts` (salted with
+  `CLICK_IP_HASH_SALT`, falling back to `AUTH_SECRET` if unset). This
+  satisfies the "privacy-aware network identifier" requirement without
+  ever persisting a directly-identifying value.
 - `userAgent` and `referrer` are stored as-is because they're necessary
   for both analytics and bot detection, but are not linked to any other
   PII in this schema.
@@ -101,13 +126,19 @@ Privacy-by-design notes on `Click`:
   snapshot** of the latest related `BotEvent`, kept for fast filtering in
   future analytics queries. `BotEvent` remains the source of truth and can
   hold multiple historical classifications per click (e.g. if re-scored).
+- `deviceType`/`browser`/`os`/`country`/`region`/`city` are left at their
+  defaults (`UNKNOWN`/`null`) except `deviceType`, which the tracker sets
+  to `BOT` when classified as such. There is no user-agent-parsing or
+  geo-lookup capability in this codebase yet — building one is Phase 4
+  (Click Analytics) work, not Phase 3's.
 
-`BotEvent.detectionSource` and `reasonCodes` exist so whichever bot
-detection engine is wired in (Phase 5 — expected to be the product's
-existing/planned bot-detection capability, not something built from
-scratch here) can write structured, explainable verdicts through the
-`BotDetectionEngine` interface in `packages/shared/src/bot-detection.ts`,
-without AdstrackIO needing its own competing detection logic.
+`BotEvent.detectionSource` and `reasonCodes` are written by whichever bot
+detection engine is wired in. Phase 3 wires in
+`HeuristicBotDetectionEngine` (`apps/tracker/src/modules/bot-detection/`)
+— an explicitly provisional user-agent heuristic (`detectionSource:
+"tracker-heuristic-placeholder"`), not the product's existing/planned
+bot-detection capability Phase 5 is expected to wire in through the same
+`BotDetectionEngine` interface (`packages/shared/src/bot-detection.ts`).
 
 `Conversion` has optional `clickId`/`trackingLinkId` (not required) because
 a real-world conversion pipeline needs to handle conversions that arrive
@@ -119,19 +150,24 @@ this click convert" / "conversions for this link" are core attribution
 lookups — Postgres doesn't auto-index foreign key columns, and Phase 1
 CTO review found these two missing.
 
-### Flagged for the phase that starts writing to these tables (not fixed now)
+### Flagged for the phase that scales this up (not fixed now)
 
-Reviewed for what could become a problem at real click volume, once Phase
-3/4 start inserting rows here — none of this blocks Phase 1, since nothing
-writes to `Click`/`BotEvent`/`Conversion` yet, but it should inform that
-work rather than being rediscovered under load:
+Reviewed for what could become a problem at real click volume — none of
+this blocks Phase 3, since click volume in any near-term deployment is far
+below where these start to matter, but it should inform Phase 4's design
+rather than being rediscovered under load:
 
-- **Primary key strategy.** `Click`/`BotEvent` use the same `cuid()` text
-  primary key as every other model for consistency. At sustained
-  high-volume insert rates, a purely time-ordered key (e.g. UUIDv7/ULID,
-  or a `bigint` identity column) indexes and partitions more efficiently
-  than `cuid()`'s ordering. Worth an explicit decision — not necessarily a
-  change — when Phase 3/4 design real ingestion.
+- **Primary key strategy.** `Click.id` is explicitly generated as a
+  `crypto.randomUUID()` (UUIDv4) by `apps/tracker`, not the model's
+  `cuid()` default — the click-ID security requirement ("cryptographically
+  safe / collision resistant... not predictable/sequential") took priority
+  over insert-locality. `BotEvent` still uses its `cuid()` default. Both
+  are effectively random-order keys from the index's perspective at
+  sustained high-volume insert rates, a purely time-ordered key (e.g.
+  UUIDv7/ULID prefixed, or a separate `bigint` identity column with the
+  random UUID as a secondary unique column) indexes and partitions more
+  efficiently. Worth an explicit decision when Phase 4 designs real
+  high-volume ingestion — not a problem at today's expected volume.
 - **No table partitioning.** A single unpartitioned `clicks` table will
   eventually need time-based partitioning (e.g. monthly) for both write
   throughput and the ability to cheaply drop/archive old data. Standard

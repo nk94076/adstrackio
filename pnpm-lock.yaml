@@ -130,15 +130,24 @@ importers:
       '@adstrackio/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@adstrackio/database':
+        specifier: workspace:*
+        version: link:../../packages/database
       '@adstrackio/logger':
         specifier: workspace:*
         version: link:../../packages/logger
       '@adstrackio/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@fastify/helmet':
+        specifier: ^13.0.1
+        version: 13.1.1
       fastify:
         specifier: ^5.1.0
         version: 5.12.1
+      fastify-plugin:
+        specifier: ^5.0.1
+        version: 5.1.0
     devDependencies:
       '@types/node':
         specifier: ^22.10.1

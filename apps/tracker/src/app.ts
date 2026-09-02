@@ -1,12 +1,20 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import type { Env } from "@adstrackio/config";
+import { prisma } from "@adstrackio/database";
 import { REDACT_PATHS } from "@adstrackio/logger";
-import { NotImplementedTrackingResolver, type TrackingResolver } from "@adstrackio/shared";
+import type { BotDetectionEngine, TrackingResolver } from "@adstrackio/shared";
+import { HeuristicBotDetectionEngine } from "./modules/bot-detection/heuristic-bot-detection-engine.js";
+import { PrismaTrackingResolver } from "./modules/tracker/prisma-tracking-resolver.js";
+import { registerTrackerRoutes } from "./modules/tracker/tracker.routes.js";
+import { errorHandlerPlugin } from "./plugins/error-handler.js";
+import { prismaPlugin } from "./plugins/prisma.js";
+import { securityPlugin } from "./plugins/security.js";
 
 export interface BuildTrackerAppOptions {
   env: Env;
   logger?: boolean;
   resolver?: TrackingResolver;
+  botDetectionEngine?: BotDetectionEngine;
 }
 
 /**
@@ -17,14 +25,15 @@ export interface BuildTrackerAppOptions {
  *   independently of the dashboard/API
  * - redirect latency must stay very low and must never be blocked by
  *   analytics or admin-plane work
- * - the future Google-facing transparent redirect behavior needs to be
+ * - the Google-facing transparent redirect behavior needs to be
  *   independently auditable, which is easier when it isn't entangled with
  *   general API/auth code
  *
- * Phase 1 only establishes this boundary. The actual redirect endpoint
- * (resolving hostname+slug -> Destination and recording a Click) is
- * Phase 3 (Transparent Click Tracker) — see
- * docs/compliance/google-transparent-tracker.md.
+ * Phase 3 (Transparent Click Tracker) implements the real GET /:slug
+ * redirect endpoint here — see modules/tracker/tracker.routes.ts and
+ * docs/compliance/google-transparent-tracker.md for the architecture (the
+ * request's own `redirection_url` parameter is the immediate next hop;
+ * nothing here resolves or substitutes a hidden backend destination).
  */
 export async function buildTrackerApp(options: BuildTrackerAppOptions): Promise<FastifyInstance> {
   const fastify = Fastify({
@@ -38,25 +47,19 @@ export async function buildTrackerApp(options: BuildTrackerAppOptions): Promise<
     trustProxy: true,
   });
 
-  const resolver = options.resolver ?? new NotImplementedTrackingResolver();
+  await fastify.register(prismaPlugin);
+  await fastify.register(securityPlugin);
+  await fastify.register(errorHandlerPlugin);
 
   fastify.get("/health", async () => ({ status: "ok", service: "tracker" }));
 
-  // Not a real redirect endpoint. It proves the TrackingResolver boundary
-  // is wired end-to-end while making it unambiguous that no resolution
-  // logic exists yet, instead of silently 404ing or faking a redirect.
-  fastify.get("/*", async (request, reply) => {
-    try {
-      await resolver.resolve({ hostname: request.hostname, slug: request.url });
-    } catch (error) {
-      reply.status(501).send({
-        error: {
-          code: "NOT_IMPLEMENTED",
-          message: error instanceof Error ? error.message : "Not implemented",
-        },
-      });
-    }
-  });
+  const resolver = options.resolver ?? new PrismaTrackingResolver(prisma);
+  const botDetectionEngine = options.botDetectionEngine ?? new HeuristicBotDetectionEngine();
+  // Falls back to AUTH_SECRET so no new required env var is introduced —
+  // see packages/config/src/schema.ts for CLICK_IP_HASH_SALT.
+  const ipHashSalt = options.env.CLICK_IP_HASH_SALT ?? options.env.AUTH_SECRET;
+
+  await fastify.register(registerTrackerRoutes, { resolver, botDetectionEngine, ipHashSalt });
 
   return fastify;
 }

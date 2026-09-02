@@ -1,5 +1,7 @@
 export * from "./api-error.js";
 export * from "./url.js";
 export * from "./hostname.js";
+export * from "./transparent-redirect.js";
 export * from "./tracking-resolver.js";
 export * from "./bot-detection.js";
+export * from "./ip-hash.js";

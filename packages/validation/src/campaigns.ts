@@ -8,6 +8,7 @@ export const createCampaignSchema = z
     status: campaignStatusSchema.default("DRAFT"),
     trackingDomainId: z.string().cuid().optional(),
     destinationId: z.string().cuid().optional(),
+    safePageUrl: z.string().trim().min(1).max(2048).optional(),
     budgetAmount: z.number().nonnegative().optional(),
     budgetCurrency: z
       .string()
@@ -30,6 +31,7 @@ export const updateCampaignSchema = z.object({
   status: campaignStatusSchema.optional(),
   trackingDomainId: z.string().cuid().nullable().optional(),
   destinationId: z.string().cuid().nullable().optional(),
+  safePageUrl: z.string().trim().min(1).max(2048).nullable().optional(),
   budgetAmount: z.number().nonnegative().nullable().optional(),
   budgetCurrency: z.string().trim().toUpperCase().length(3).nullable().optional(),
   startDate: z.coerce.date().nullable().optional(),

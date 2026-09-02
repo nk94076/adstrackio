@@ -24,6 +24,14 @@ export const envSchema = z.object({
 
   API_PORT: z.coerce.number().int().positive().default(4000),
   TRACKER_PORT: z.coerce.number().int().positive().default(4100),
+
+  // Salt for one-way hashing a click's IP address (apps/tracker never
+  // stores a raw IP — see Click.ipHash). Optional: falls back to
+  // AUTH_SECRET at the call site if unset, so no new required config is
+  // introduced. Set explicitly in production to decouple IP-hash
+  // derivation from the session-signing secret (e.g. so rotating one
+  // doesn't silently change the other's output).
+  CLICK_IP_HASH_SALT: z.string().min(16).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
