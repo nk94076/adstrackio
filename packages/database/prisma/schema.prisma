@@ -354,29 +354,67 @@ model Click {
   @@map("clicks")
 }
 
+/// A reported conversion event (Phase 7: Conversion Tracking), always
+/// attributed through a real Click — see docs/architecture/conversion-tracking.md
+/// for the full design rationale.
+///
+/// campaignId/trackingLinkId/organizationId are denormalized from `click`
+/// purely for query performance (indexed filtering/aggregation without a
+/// join) — they are never independently client-supplied and can never
+/// disagree with the referenced Click's own values. The service layer
+/// derives them at creation time and never updates them afterward;
+/// `enforce_conversion_click_attribution` (migration
+/// `20260902130000_conversion_tracking`) additionally enforces this at the
+/// database level as a backstop against any write that bypasses the
+/// service layer (a raw SQL statement, a future admin tool, a bug) —
+/// mirrors the pattern `enforce_referral_configuration_activation`
+/// established for the referral-activation gate.
+///
+/// value/currency deliberately use the same Decimal(12,2)/VarChar(3)
+/// representation already established by Campaign.budgetAmount/
+/// budgetCurrency, rather than introducing a second monetary convention.
+/// Both are nullable: not every conversion event is monetary (e.g. a
+/// "signup" or "lead" event may carry no value) — see
+/// docs/architecture/conversion-tracking.md#monetary-representation.
 model Conversion {
-  id             String           @id @default(cuid())
-  organizationId String
-  campaignId     String
-  trackingLinkId String?
-  clickId        String?
-  status         ConversionStatus @default(PENDING)
-  payoutAmount   Decimal?         @db.Decimal(12, 2)
-  payoutCurrency String?          @db.VarChar(3)
-  occurredAt     DateTime         @default(now())
-  metadata       Json?
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  id                   String           @id @default(cuid())
+  organizationId       String
+  campaignId           String
+  trackingLinkId       String
+  clickId              String
+  /// Free-text conversion/event type (e.g. "purchase", "signup", "lead") —
+  /// deliberately not an enum: the set of meaningful event names is
+  /// defined by each advertiser's own funnel, not by AdstrackIO.
+  eventName            String
+  status               ConversionStatus @default(PENDING)
+  value                Decimal?         @db.Decimal(12, 2)
+  currency             String?          @db.VarChar(3)
+  /// Caller-supplied idempotency key, unique per organization (see
+  /// @@unique below). Optional: a caller with no natural external ID of
+  /// its own is not forced to invent one, but then gets no deduplication
+  /// guarantee — see docs/architecture/conversion-tracking.md#deduplication.
+  externalConversionId String?
+  occurredAt           DateTime         @default(now())
+  metadata             Json?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
 
-  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  campaign     Campaign      @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  trackingLink TrackingLink? @relation(fields: [trackingLinkId], references: [id])
-  click        Click?        @relation(fields: [clickId], references: [id])
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign     Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  trackingLink TrackingLink @relation(fields: [trackingLinkId], references: [id])
+  click        Click        @relation(fields: [clickId], references: [id])
 
+  /// Postgres treats NULL as distinct from every other value (including
+  /// another NULL) for uniqueness purposes, so this constraint only
+  /// applies to conversions that actually supplied an externalConversionId
+  /// — any number of conversions with a NULL externalConversionId coexist
+  /// freely. See docs/architecture/conversion-tracking.md#deduplication.
+  @@unique([organizationId, externalConversionId])
   @@index([organizationId, occurredAt])
-  @@index([campaignId])
-  @@index([trackingLinkId])
+  @@index([campaignId, occurredAt])
+  @@index([trackingLinkId, occurredAt])
   @@index([clickId])
+  @@index([status, occurredAt])
   @@map("conversions")
 }
 
