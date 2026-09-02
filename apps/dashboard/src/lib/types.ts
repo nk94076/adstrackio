@@ -117,7 +117,48 @@ export interface TrackingLink {
   destinationId: string;
   slug: string;
   status: TrackingLinkStatus;
+  /** The single affiliate partner this link's clicks attribute to (Phase
+   * 9), or null for an ordinary non-affiliate link. Must already be on the
+   * link's own campaign's roster — see affiliate-partners.md. */
+  affiliatePartnerId: string | null;
   createdAt: string;
+}
+
+export type AffiliatePartnerStatus = "PENDING" | "ACTIVE" | "PAUSED" | "ARCHIVED";
+
+/** Phase 9: Affiliate/Partner System — see
+ * docs/architecture/affiliate-partners.md. */
+export interface AffiliatePartner {
+  id: string;
+  name: string;
+  externalId: string | null;
+  email: string | null;
+  status: AffiliatePartnerStatus;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A partner's roster membership on one campaign — the join table that
+ * authorizes (but does not by itself attribute) clicks; see
+ * TrackingLink.affiliatePartnerId for the actual attribution point. */
+export interface CampaignAffiliatePartnerAssignment {
+  id: string;
+  campaignId: string;
+  affiliatePartnerId: string;
+  createdAt: string;
+  affiliatePartner: AffiliatePartner;
+}
+
+export interface AffiliatePartnerPerformanceRow {
+  affiliatePartnerId: string;
+  name: string;
+  status: AffiliatePartnerStatus;
+  clicks: number;
+  humanClicks: number;
+  conversions: number;
+  approvedConversions: number;
+  conversionRate: number;
 }
 
 export type ReferralConfigurationType = "NORMAL" | "HIDE" | "CUSTOM_PARTNER_ATTRIBUTION";
