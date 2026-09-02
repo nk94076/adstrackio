@@ -11,6 +11,7 @@ import {
   getClicksByLink,
   getClicksByOs,
   getClicksByReferrer,
+  getConversionSummary,
   type AnalyticsFilters,
 } from "./analytics.service.js";
 
@@ -154,6 +155,17 @@ export async function registerAnalyticsRoutes(fastify: FastifyInstance) {
       const input = analyticsFilterSchema.parse(request.query);
       const rows = await getClicksByCountry(fastify.prisma, toFilters(organizationId, input));
       return { rows, range: rangeOf(input) };
+    },
+  );
+
+  fastify.get(
+    "/organizations/:organizationId/analytics/conversions/summary",
+    { preHandler },
+    async (request) => {
+      const { organizationId } = request.params as { organizationId: string };
+      const input = analyticsFilterSchema.parse(request.query);
+      const summary = await getConversionSummary(fastify.prisma, toFilters(organizationId, input));
+      return { summary, range: rangeOf(input) };
     },
   );
 }

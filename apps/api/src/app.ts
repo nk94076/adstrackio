@@ -14,6 +14,7 @@ import { registerTrackingLinkRoutes } from "./modules/tracking-links/tracking-li
 import { registerReferralRoutes } from "./modules/referrals/referrals.routes.js";
 import { registerAuditLogRoutes } from "./modules/audit-logs/audit-logs.routes.js";
 import { registerAnalyticsRoutes } from "./modules/analytics/analytics.routes.js";
+import { registerConversionRoutes } from "./modules/conversions/conversions.routes.js";
 
 export interface BuildAppOptions {
   env: Env;
@@ -50,6 +51,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       await registerReferralRoutes(v1);
       await registerAuditLogRoutes(v1);
       await registerAnalyticsRoutes(v1);
+      await registerConversionRoutes(v1);
     },
     { prefix: "/api/v1" },
   );

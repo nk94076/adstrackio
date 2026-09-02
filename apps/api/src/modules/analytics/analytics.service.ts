@@ -366,6 +366,123 @@ export async function getClicksByOs(
   return rows.map((row) => ({ ...row, label: row.key }));
 }
 
+// ---------------------------------------------------------------------------
+// Conversion analytics (Phase 7) — see
+// docs/architecture/conversion-tracking.md#analytics for full definitions.
+// ---------------------------------------------------------------------------
+
+function buildConversionWhere(filters: AnalyticsFilters): Prisma.Sql {
+  const conditions: Prisma.Sql[] = [
+    Prisma.sql`cv."organizationId" = ${filters.organizationId}`,
+    Prisma.sql`cv."occurredAt" >= ${filters.from}`,
+    Prisma.sql`cv."occurredAt" < ${filters.to}`,
+  ];
+  if (filters.campaignId) {
+    conditions.push(Prisma.sql`cv."campaignId" = ${filters.campaignId}`);
+  }
+  if (filters.trackingLinkId) {
+    conditions.push(Prisma.sql`cv."trackingLinkId" = ${filters.trackingLinkId}`);
+  }
+  if (filters.trackingDomainId) {
+    conditions.push(
+      Prisma.sql`cv."trackingLinkId" IN (SELECT id FROM tracking_links WHERE "trackingDomainId" = ${filters.trackingDomainId})`,
+    );
+  }
+  return Prisma.join(conditions, " AND ");
+}
+
+export interface ConversionSummary {
+  totalConversions: number;
+  pendingConversions: number;
+  approvedConversions: number;
+  rejectedConversions: number;
+  reversedConversions: number;
+  /** Sum of `value` across every conversion in range, regardless of
+   * status — a raw total, not a "trust this number" figure (a PENDING or
+   * REJECTED conversion's reported value counts here too). */
+  totalConversionValue: number;
+  /** Sum of `value` across only APPROVED conversions in range — the
+   * figure an advertiser would actually treat as attributed revenue. */
+  approvedConversionValue: number;
+  /** The clicks-side denominator conversionRate divides into — see its
+   * own doc comment for why this is HUMAN clicks, not all clicks. */
+  humanClicksInRange: number;
+  /**
+   * approvedConversions / humanClicksInRange, expressed as a percentage
+   * (0-100, not a 0-1 ratio) — same convention as ClickSummary.botPercentage.
+   * Denominator is HUMAN clicks specifically, not all clicks and not
+   * unique clicks: bot/suspicious traffic can never convert legitimately,
+   * so including it would dilute the rate with clicks that were never
+   * going to convert, understating real performance. 0 when
+   * humanClicksInRange is 0 (never divides by zero).
+   *
+   * This is a period-over-period ratio, not a cohort conversion rate: both
+   * humanClicksInRange and the conversion counts above are independently
+   * filtered to the same [from, to) window by their OWN occurredAt, not
+   * "clicks in this window that eventually converted, whenever that
+   * happened." A click on day 1 whose conversion is approved on day 5
+   * contributes to day 1's click count and day 5's conversion count
+   * separately — this is a deliberate simplification (see "Do not build a
+   * complete attribution engine yet" in
+   * docs/architecture/conversion-tracking.md), not a bug.
+   */
+  conversionRate: number;
+}
+
+export async function getConversionSummary(
+  prisma: PrismaClient,
+  filters: AnalyticsFilters,
+): Promise<ConversionSummary> {
+  const clicksWhere = buildWhere(filters);
+  const conversionsWhere = buildConversionWhere(filters);
+
+  const [clickRows, conversionRows] = await Promise.all([
+    prisma.$queryRaw<{ humanClicks: number }[]>(Prisma.sql`
+      SELECT COUNT(*) FILTER (WHERE c."botClassification" = 'HUMAN')::int AS "humanClicks"
+      FROM clicks c
+      WHERE ${clicksWhere}
+    `),
+    prisma.$queryRaw<
+      {
+        total: number;
+        pending: number;
+        approved: number;
+        rejected: number;
+        reversed: number;
+        totalValue: string | null;
+        approvedValue: string | null;
+      }[]
+    >(Prisma.sql`
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE cv.status = 'PENDING')::int AS pending,
+        COUNT(*) FILTER (WHERE cv.status = 'APPROVED')::int AS approved,
+        COUNT(*) FILTER (WHERE cv.status = 'REJECTED')::int AS rejected,
+        COUNT(*) FILTER (WHERE cv.status = 'REVERSED')::int AS reversed,
+        COALESCE(SUM(cv.value), 0)::text AS "totalValue",
+        COALESCE(SUM(cv.value) FILTER (WHERE cv.status = 'APPROVED'), 0)::text AS "approvedValue"
+      FROM conversions cv
+      WHERE ${conversionsWhere}
+    `),
+  ]);
+
+  const humanClicks = clickRows[0]?.humanClicks ?? 0;
+  const row = conversionRows[0]!;
+
+  return {
+    totalConversions: row.total,
+    pendingConversions: row.pending,
+    approvedConversions: row.approved,
+    rejectedConversions: row.rejected,
+    reversedConversions: row.reversed,
+    totalConversionValue: Number(row.totalValue ?? 0),
+    approvedConversionValue: Number(row.approvedValue ?? 0),
+    humanClicksInRange: humanClicks,
+    conversionRate:
+      humanClicks > 0 ? Math.round((row.approved / humanClicks) * 10000) / 100 : 0,
+  };
+}
+
 export async function getClicksByCountry(
   prisma: PrismaClient,
   filters: AnalyticsFilters,
