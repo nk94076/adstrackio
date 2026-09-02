@@ -1,12 +1,44 @@
 import type { PrismaClient } from "@adstrackio/database";
-import { ApiError } from "@adstrackio/shared";
-import type { CreateTrackingDomainInput, UpdateTrackingDomainInput } from "@adstrackio/validation";
+import { ApiError, InvalidHostnameError, normalizeTrackingHostname } from "@adstrackio/shared";
+import type { CreateTrackingDomainInput } from "@adstrackio/validation";
 import { writeAuditLog } from "../audit-logs/audit-log.service.js";
+import {
+  checkDnsVerification,
+  generateVerificationToken,
+  verificationRecordName,
+  verificationRecordValue,
+  type TxtResolver,
+} from "./dns-verification.js";
+
+function normalizeOrThrow(hostname: string): string {
+  try {
+    return normalizeTrackingHostname(hostname);
+  } catch (error) {
+    if (error instanceof InvalidHostnameError) {
+      throw ApiError.validation(error.message);
+    }
+    throw error;
+  }
+}
+
+/** Shape of the DNS record the customer must create, safe to return to the client. */
+export function verificationInstructions(hostname: string, token: string | null) {
+  if (!token) {
+    return null;
+  }
+  return {
+    recordType: "TXT" as const,
+    recordName: verificationRecordName(hostname),
+    recordValue: verificationRecordValue(token),
+  };
+}
 
 /**
- * Verification is a foundation-only concept in Phase 1: every domain is
- * created PENDING. Real DNS/TXT-record verification is a later phase; this
- * service intentionally does not fake a "verified" result.
+ * A domain is created PENDING and inactive. Its verification token is
+ * generated immediately so the dashboard can show DNS setup instructions
+ * without a separate step — the token itself is not a secret (it is meant
+ * to be published in public DNS), it just proves the caller controls the
+ * zone once it shows up there.
  */
 export async function createTrackingDomain(
   prisma: PrismaClient,
@@ -14,14 +46,20 @@ export async function createTrackingDomain(
   organizationId: string,
   input: CreateTrackingDomainInput,
 ) {
-  const existing = await prisma.trackingDomain.findUnique({ where: { hostname: input.hostname } });
+  const hostname = normalizeOrThrow(input.hostname);
+
+  const existing = await prisma.trackingDomain.findUnique({ where: { hostname } });
   if (existing) {
-    throw ApiError.conflict(`Hostname "${input.hostname}" is already registered`);
+    throw ApiError.conflict(`Hostname "${hostname}" is already registered`);
   }
 
   return prisma.$transaction(async (tx) => {
     const domain = await tx.trackingDomain.create({
-      data: { organizationId, hostname: input.hostname },
+      data: {
+        organizationId,
+        hostname,
+        verificationToken: generateVerificationToken(),
+      },
     });
 
     await writeAuditLog(tx, {
@@ -58,30 +96,127 @@ export async function getTrackingDomain(
   return domain;
 }
 
-export async function updateTrackingDomain(
+/**
+ * Runs the real, server-side DNS TXT check for a domain. This never trusts
+ * a client-supplied "verified" flag — the only way `verificationStatus`
+ * becomes VERIFIED is a successful lookup performed right here.
+ *
+ * Once a domain is ACTIVE, the database's `isActive => VERIFIED` invariant
+ * means it must stay VERIFIED; re-running verification on an active domain
+ * is a safe no-op rather than something that could flip it to FAILED and
+ * violate that invariant (deactivate first to re-verify from scratch).
+ */
+export async function verifyTrackingDomain(
   prisma: PrismaClient,
   actorUserId: string,
   organizationId: string,
   domainId: string,
-  input: UpdateTrackingDomainInput,
+  resolveTxt?: TxtResolver,
 ) {
-  await getTrackingDomain(prisma, organizationId, domainId);
+  const domain = await getTrackingDomain(prisma, organizationId, domainId);
+
+  if (domain.isActive) {
+    return domain;
+  }
+
+  const token = domain.verificationToken ?? generateVerificationToken();
 
   return prisma.$transaction(async (tx) => {
-    const domain = await tx.trackingDomain.update({
+    await writeAuditLog(tx, {
+      organizationId,
+      actorUserId,
+      action: "domain.verification_requested",
+      entityType: "TrackingDomain",
+      entityId: domain.id,
+      metadata: { hostname: domain.hostname },
+    });
+
+    const verified = await checkDnsVerification(domain.hostname, token, resolveTxt);
+
+    const updated = await tx.trackingDomain.update({
       where: { id: domainId },
-      data: { isActive: input.isActive },
+      data: {
+        verificationToken: token,
+        verificationStatus: verified ? "VERIFIED" : "FAILED",
+        verifiedAt: verified ? new Date() : null,
+      },
     });
 
     await writeAuditLog(tx, {
       organizationId,
       actorUserId,
-      action: "domain.updated",
+      action: verified ? "domain.verified" : "domain.verification_failed",
       entityType: "TrackingDomain",
       entityId: domain.id,
-      metadata: { isActive: input.isActive },
+      metadata: { hostname: domain.hostname },
+    });
+
+    return updated;
+  });
+}
+
+/**
+ * Activation requires the domain to already be VERIFIED. The check and the
+ * write happen in the same conditional UPDATE (rather than read-then-write)
+ * so a concurrent verification-status change can't create a window where an
+ * unverified domain is activated.
+ */
+export async function activateTrackingDomain(
+  prisma: PrismaClient,
+  actorUserId: string,
+  organizationId: string,
+  domainId: string,
+) {
+  await getTrackingDomain(prisma, organizationId, domainId);
+
+  return prisma.$transaction(async (tx) => {
+    const { count } = await tx.trackingDomain.updateMany({
+      where: { id: domainId, organizationId, verificationStatus: "VERIFIED" },
+      data: { isActive: true },
+    });
+
+    if (count === 0) {
+      throw ApiError.conflict("Domain must be verified before it can be activated");
+    }
+
+    const domain = await tx.trackingDomain.findUniqueOrThrow({ where: { id: domainId } });
+
+    await writeAuditLog(tx, {
+      organizationId,
+      actorUserId,
+      action: "domain.activated",
+      entityType: "TrackingDomain",
+      entityId: domain.id,
+      metadata: { hostname: domain.hostname },
     });
 
     return domain;
+  });
+}
+
+export async function deactivateTrackingDomain(
+  prisma: PrismaClient,
+  actorUserId: string,
+  organizationId: string,
+  domainId: string,
+) {
+  const domain = await getTrackingDomain(prisma, organizationId, domainId);
+
+  return prisma.$transaction(async (tx) => {
+    const updated = await tx.trackingDomain.update({
+      where: { id: domainId },
+      data: { isActive: false },
+    });
+
+    await writeAuditLog(tx, {
+      organizationId,
+      actorUserId,
+      action: "domain.deactivated",
+      entityType: "TrackingDomain",
+      entityId: domain.id,
+      metadata: { hostname: domain.hostname },
+    });
+
+    return updated;
   });
 }
