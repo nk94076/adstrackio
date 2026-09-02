@@ -58,7 +58,7 @@ const EMPTY_SUMMARY: ClickSummary = {
   botClicks: 0,
   suspiciousClicks: 0,
   unknownClicks: 0,
-  uniqueClicks: 0,
+  uniqueClicksInRange: 0,
   botPercentage: 0,
 };
 
@@ -91,7 +91,9 @@ function BreakdownTable({ title, rows }: { title: string; rows: ClickBreakdownRo
             <th className="px-4 py-2 font-medium">Clicks</th>
             <th className="px-4 py-2 font-medium">Human</th>
             <th className="px-4 py-2 font-medium">Bot</th>
-            <th className="px-4 py-2 font-medium">Unique</th>
+            <th className="px-4 py-2 font-medium" title="Unique visitors estimated over the whole selected date range — not summed from the trend chart's per-bucket values">
+              Unique (range)
+            </th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
@@ -108,7 +110,7 @@ function BreakdownTable({ title, rows }: { title: string; rows: ClickBreakdownRo
               <td className="px-4 py-2 text-slate-600">{row.clicks}</td>
               <td className="px-4 py-2 text-slate-600">{row.humanClicks}</td>
               <td className="px-4 py-2 text-slate-600">{row.botClicks}</td>
-              <td className="px-4 py-2 text-slate-600">{row.uniqueClicks}</td>
+              <td className="px-4 py-2 text-slate-600">{row.uniqueClicksInRange}</td>
             </tr>
           ))}
           {rows.length === 0 && (
@@ -361,10 +363,15 @@ export default function AnalyticsPage() {
             <p className="mt-1 text-2xl font-semibold text-slate-900">{summary.totalClicks}</p>
           </div>
           <div className="card p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              Unique Clicks
+            <p
+              className="text-xs font-medium uppercase tracking-wide text-slate-500"
+              title="Unique visitors estimated across the entire selected date range — distinct from the per-bucket estimate shown in the trend chart below"
+            >
+              Unique Clicks (range)
             </p>
-            <p className="mt-1 text-2xl font-semibold text-slate-900">{summary.uniqueClicks}</p>
+            <p className="mt-1 text-2xl font-semibold text-slate-900">
+              {summary.uniqueClicksInRange}
+            </p>
           </div>
           <div className="card p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">

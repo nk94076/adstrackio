@@ -50,14 +50,21 @@ function buildWhere(filters: AnalyticsFilters): Prisma.Sql {
 }
 
 /** Shared FILTER/DISTINCT fragment used by every query that reports the
- * human/bot/unique breakdown alongside a raw click count. */
+ * human/bot/unique breakdown alongside a raw click count.
+ *
+ * `uniqueClicksInRange` is deliberately named to distinguish it from
+ * `ClickTimeseriesPoint.uniqueClicksInBucket` below — both are
+ * `COUNT(DISTINCT (ipHash, userAgent))`, but computed over different
+ * windows (the whole requested date range here vs. one bucket there), so
+ * they are NOT directly comparable or summable across a timeseries. See
+ * docs/architecture/click-analytics.md#unique-click-methodology. */
 const CLASSIFICATION_AGGREGATES = Prisma.sql`
   COUNT(*)::int AS clicks,
   COUNT(*) FILTER (WHERE c."botClassification" = 'HUMAN')::int AS "humanClicks",
   COUNT(*) FILTER (WHERE c."botClassification" = 'BOT')::int AS "botClicks",
   COUNT(*) FILTER (WHERE c."botClassification" = 'SUSPICIOUS')::int AS "suspiciousClicks",
   COUNT(*) FILTER (WHERE c."botClassification" = 'UNKNOWN' OR c."botClassification" IS NULL)::int AS "unknownClicks",
-  COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicks"
+  COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicksInRange"
 `;
 
 export interface ClickSummary {
@@ -66,7 +73,11 @@ export interface ClickSummary {
   botClicks: number;
   suspiciousClicks: number;
   unknownClicks: number;
-  uniqueClicks: number;
+  /** COUNT(DISTINCT (ipHash, userAgent)) over the ENTIRE requested date
+   * range — see docs/architecture/click-analytics.md#unique-click-methodology.
+   * Not comparable to ClickTimeseriesPoint.uniqueClicksInBucket, which is
+   * the same computation scoped to one bucket instead. */
+  uniqueClicksInRange: number;
   botPercentage: number;
 }
 
@@ -82,7 +93,7 @@ export async function getClickSummary(
       botClicks: number;
       suspiciousClicks: number;
       unknownClicks: number;
-      uniqueClicks: number;
+      uniqueClicksInRange: number;
     }[]
   >(Prisma.sql`
     SELECT ${CLASSIFICATION_AGGREGATES}
@@ -97,7 +108,7 @@ export async function getClickSummary(
     botClicks: row.botClicks,
     suspiciousClicks: row.suspiciousClicks,
     unknownClicks: row.unknownClicks,
-    uniqueClicks: row.uniqueClicks,
+    uniqueClicksInRange: row.uniqueClicksInRange,
     botPercentage: row.clicks > 0 ? Math.round((row.botClicks / row.clicks) * 10000) / 100 : 0,
   };
 }
@@ -111,7 +122,14 @@ export interface ClickTimeseriesPoint {
   clicks: number;
   humanClicks: number;
   botClicks: number;
-  uniqueClicks: number;
+  /** COUNT(DISTINCT (ipHash, userAgent)) computed independently WITHIN
+   * THIS BUCKET only — a visitor who clicks again in a later bucket is
+   * counted again there. Deliberately named differently from
+   * ClickSummary.uniqueClicksInRange (and ClickBreakdownRow's field of the
+   * same name): the two are different uniqueness windows and must never
+   * be summed across buckets and compared against the range-wide total —
+   * see docs/architecture/click-analytics.md#unique-click-methodology. */
+  uniqueClicksInBucket: number;
 }
 
 export async function getClickTimeseries(
@@ -128,14 +146,14 @@ export async function getClickTimeseries(
   // to the requested zone's wall clock before truncating. Verified against
   // real Postgres — see docs/architecture/click-analytics.md.
   const rows = await prisma.$queryRaw<
-    { bucketStart: Date; clicks: number; humanClicks: number; botClicks: number; uniqueClicks: number }[]
+    { bucketStart: Date; clicks: number; humanClicks: number; botClicks: number; uniqueClicksInBucket: number }[]
   >(Prisma.sql`
     SELECT
       date_trunc(${bucket}, c."occurredAt" AT TIME ZONE 'UTC' AT TIME ZONE ${timezone}) AS "bucketStart",
       COUNT(*)::int AS clicks,
       COUNT(*) FILTER (WHERE c."botClassification" = 'HUMAN')::int AS "humanClicks",
       COUNT(*) FILTER (WHERE c."botClassification" = 'BOT')::int AS "botClicks",
-      COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicks"
+      COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicksInBucket"
     FROM clicks c
     WHERE ${where}
     GROUP BY 1
@@ -151,7 +169,7 @@ export async function getClickTimeseries(
     clicks: row.clicks,
     humanClicks: row.humanClicks,
     botClicks: row.botClicks,
-    uniqueClicks: row.uniqueClicks,
+    uniqueClicksInBucket: row.uniqueClicksInBucket,
   }));
 }
 
@@ -161,7 +179,11 @@ export interface ClickBreakdownRow {
   clicks: number;
   humanClicks: number;
   botClicks: number;
-  uniqueClicks: number;
+  /** Same range-wide window as ClickSummary.uniqueClicksInRange, scoped to
+   * this breakdown row's group — not comparable to a timeseries point's
+   * uniqueClicksInBucket. See
+   * docs/architecture/click-analytics.md#unique-click-methodology. */
+  uniqueClicksInRange: number;
 }
 
 export async function getClicksByCampaign(
@@ -170,7 +192,7 @@ export async function getClicksByCampaign(
 ): Promise<ClickBreakdownRow[]> {
   const where = buildWhere(filters);
   const rows = await prisma.$queryRaw<
-    { key: string; label: string; clicks: number; humanClicks: number; botClicks: number; uniqueClicks: number }[]
+    { key: string; label: string; clicks: number; humanClicks: number; botClicks: number; uniqueClicksInRange: number }[]
   >(Prisma.sql`
     SELECT
       c."campaignId" AS key,
@@ -178,7 +200,7 @@ export async function getClicksByCampaign(
       COUNT(*)::int AS clicks,
       COUNT(*) FILTER (WHERE c."botClassification" = 'HUMAN')::int AS "humanClicks",
       COUNT(*) FILTER (WHERE c."botClassification" = 'BOT')::int AS "botClicks",
-      COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicks"
+      COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicksInRange"
     FROM clicks c
     JOIN campaigns camp ON camp.id = c."campaignId"
     WHERE ${where}
@@ -195,7 +217,7 @@ export async function getClicksByLink(
 ): Promise<ClickBreakdownRow[]> {
   const where = buildWhere(filters);
   const rows = await prisma.$queryRaw<
-    { key: string; label: string; clicks: number; humanClicks: number; botClicks: number; uniqueClicks: number }[]
+    { key: string; label: string; clicks: number; humanClicks: number; botClicks: number; uniqueClicksInRange: number }[]
   >(Prisma.sql`
     SELECT
       c."trackingLinkId" AS key,
@@ -203,7 +225,7 @@ export async function getClicksByLink(
       COUNT(*)::int AS clicks,
       COUNT(*) FILTER (WHERE c."botClassification" = 'HUMAN')::int AS "humanClicks",
       COUNT(*) FILTER (WHERE c."botClassification" = 'BOT')::int AS "botClicks",
-      COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicks"
+      COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicksInRange"
     FROM clicks c
     JOIN tracking_links tl ON tl.id = c."trackingLinkId"
     WHERE ${where}
@@ -220,7 +242,7 @@ export async function getClicksByDomain(
 ): Promise<ClickBreakdownRow[]> {
   const where = buildWhere(filters);
   const rows = await prisma.$queryRaw<
-    { key: string; label: string; clicks: number; humanClicks: number; botClicks: number; uniqueClicks: number }[]
+    { key: string; label: string; clicks: number; humanClicks: number; botClicks: number; uniqueClicksInRange: number }[]
   >(Prisma.sql`
     SELECT
       td.id AS key,
@@ -228,7 +250,7 @@ export async function getClicksByDomain(
       COUNT(*)::int AS clicks,
       COUNT(*) FILTER (WHERE c."botClassification" = 'HUMAN')::int AS "humanClicks",
       COUNT(*) FILTER (WHERE c."botClassification" = 'BOT')::int AS "botClicks",
-      COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicks"
+      COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicksInRange"
     FROM clicks c
     JOIN tracking_links tl ON tl.id = c."trackingLinkId"
     JOIN tracking_domains td ON td.id = tl."trackingDomainId"
@@ -254,7 +276,7 @@ export async function getClicksByReferrer(
 ): Promise<ClickBreakdownRow[]> {
   const where = buildWhere(filters);
   const rows = await prisma.$queryRaw<
-    { key: string; clicks: number; humanClicks: number; botClicks: number; uniqueClicks: number }[]
+    { key: string; clicks: number; humanClicks: number; botClicks: number; uniqueClicksInRange: number }[]
   >(Prisma.sql`
     SELECT
       CASE
@@ -266,7 +288,7 @@ export async function getClicksByReferrer(
       COUNT(*)::int AS clicks,
       COUNT(*) FILTER (WHERE c."botClassification" = 'HUMAN')::int AS "humanClicks",
       COUNT(*) FILTER (WHERE c."botClassification" = 'BOT')::int AS "botClicks",
-      COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicks"
+      COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicksInRange"
     FROM clicks c
     WHERE ${where}
     GROUP BY 1
@@ -282,14 +304,14 @@ export async function getClicksByDevice(
 ): Promise<ClickBreakdownRow[]> {
   const where = buildWhere(filters);
   const rows = await prisma.$queryRaw<
-    { key: string; clicks: number; humanClicks: number; botClicks: number; uniqueClicks: number }[]
+    { key: string; clicks: number; humanClicks: number; botClicks: number; uniqueClicksInRange: number }[]
   >(Prisma.sql`
     SELECT
       COALESCE(c."deviceType"::text, 'UNKNOWN') AS key,
       COUNT(*)::int AS clicks,
       COUNT(*) FILTER (WHERE c."botClassification" = 'HUMAN')::int AS "humanClicks",
       COUNT(*) FILTER (WHERE c."botClassification" = 'BOT')::int AS "botClicks",
-      COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicks"
+      COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicksInRange"
     FROM clicks c
     WHERE ${where}
     GROUP BY 1
@@ -304,14 +326,14 @@ export async function getClicksByBrowser(
 ): Promise<ClickBreakdownRow[]> {
   const where = buildWhere(filters);
   const rows = await prisma.$queryRaw<
-    { key: string; clicks: number; humanClicks: number; botClicks: number; uniqueClicks: number }[]
+    { key: string; clicks: number; humanClicks: number; botClicks: number; uniqueClicksInRange: number }[]
   >(Prisma.sql`
     SELECT
       COALESCE(c.browser, 'Unknown') AS key,
       COUNT(*)::int AS clicks,
       COUNT(*) FILTER (WHERE c."botClassification" = 'HUMAN')::int AS "humanClicks",
       COUNT(*) FILTER (WHERE c."botClassification" = 'BOT')::int AS "botClicks",
-      COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicks"
+      COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicksInRange"
     FROM clicks c
     WHERE ${where}
     GROUP BY 1
@@ -327,14 +349,14 @@ export async function getClicksByOs(
 ): Promise<ClickBreakdownRow[]> {
   const where = buildWhere(filters);
   const rows = await prisma.$queryRaw<
-    { key: string; clicks: number; humanClicks: number; botClicks: number; uniqueClicks: number }[]
+    { key: string; clicks: number; humanClicks: number; botClicks: number; uniqueClicksInRange: number }[]
   >(Prisma.sql`
     SELECT
       COALESCE(c.os, 'Unknown') AS key,
       COUNT(*)::int AS clicks,
       COUNT(*) FILTER (WHERE c."botClassification" = 'HUMAN')::int AS "humanClicks",
       COUNT(*) FILTER (WHERE c."botClassification" = 'BOT')::int AS "botClicks",
-      COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicks"
+      COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicksInRange"
     FROM clicks c
     WHERE ${where}
     GROUP BY 1
@@ -350,14 +372,14 @@ export async function getClicksByCountry(
 ): Promise<ClickBreakdownRow[]> {
   const where = buildWhere(filters);
   const rows = await prisma.$queryRaw<
-    { key: string; clicks: number; humanClicks: number; botClicks: number; uniqueClicks: number }[]
+    { key: string; clicks: number; humanClicks: number; botClicks: number; uniqueClicksInRange: number }[]
   >(Prisma.sql`
     SELECT
       COALESCE(c.country, 'Unknown') AS key,
       COUNT(*)::int AS clicks,
       COUNT(*) FILTER (WHERE c."botClassification" = 'HUMAN')::int AS "humanClicks",
       COUNT(*) FILTER (WHERE c."botClassification" = 'BOT')::int AS "botClicks",
-      COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicks"
+      COUNT(DISTINCT (c."ipHash", c."userAgent"))::int AS "uniqueClicksInRange"
     FROM clicks c
     WHERE ${where}
     GROUP BY 1

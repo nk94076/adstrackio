@@ -279,12 +279,19 @@ section covers its security-relevant properties specifically.
   or hostname — the default `NullGeoLocationProvider` makes no network
   call at all, and the interface gives no client-influenced input to a
   future implementation that could turn it into an SSRF vector.
-- **Enrichment failures cannot break the tracker's redirect path.**
-  `UserAgentParser.parse` and `GeoLocationProvider.lookup` are both
-  wrapped in try/catch in `apps/tracker/src/modules/tracker/tracker.service.ts`
-  and degrade to "unknown" on any failure — a broken or slow geo provider
-  can degrade analytics data quality, but can never prevent a `Click` from
-  being written or a redirect from being issued. See
+- **Enrichment failures — and latency — cannot break the tracker's
+  redirect path.** `UserAgentParser.parse` is synchronous and wrapped in
+  try/catch in `apps/tracker/src/modules/tracker/tracker.service.ts`,
+  degrading to "unknown" on any throw. `GeoLocationProvider.lookup` is
+  never awaited on the redirect path at all: the `Click` row is written
+  with geo fields null, `recordClick` returns, and the geo lookup runs
+  afterward in the background, applying its result via a follow-up
+  `UPDATE` if/when it resolves. A broken, slow, or even a permanently
+  hanging geo provider can degrade analytics data quality (geo fields stay
+  null) but can never delay or prevent a `Click` from being written or a
+  redirect from being issued — proven directly by a regression test using
+  a `GeoLocationProvider` whose promise never resolves during the test.
+  See
   `docs/architecture/click-analytics.md#data-enrichment-strategy-keeping-the-redirect-hot-path-safe`.
 
 ## Secrets and logging

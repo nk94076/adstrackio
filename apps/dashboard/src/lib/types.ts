@@ -115,7 +115,10 @@ export interface ClickSummary {
   botClicks: number;
   suspiciousClicks: number;
   unknownClicks: number;
-  uniqueClicks: number;
+  /** Unique visitors estimated over the ENTIRE requested date range. Not
+   * comparable to ClickTimeseriesPoint.uniqueClicksInBucket — see
+   * docs/architecture/click-analytics.md#unique-click-methodology. */
+  uniqueClicksInRange: number;
   botPercentage: number;
 }
 
@@ -127,7 +130,11 @@ export interface ClickTimeseriesPoint {
   clicks: number;
   humanClicks: number;
   botClicks: number;
-  uniqueClicks: number;
+  /** Unique visitors estimated WITHIN THIS BUCKET only — a visitor
+   * appearing in two buckets counts once in each. Summing this field
+   * across buckets does NOT equal ClickSummary.uniqueClicksInRange for
+   * the same period. */
+  uniqueClicksInBucket: number;
 }
 
 export interface ClickBreakdownRow {
@@ -136,7 +143,9 @@ export interface ClickBreakdownRow {
   clicks: number;
   humanClicks: number;
   botClicks: number;
-  uniqueClicks: number;
+  /** Same range-wide window as ClickSummary.uniqueClicksInRange, scoped to
+   * this row's group. */
+  uniqueClicksInRange: number;
 }
 
 export interface AuditLog {

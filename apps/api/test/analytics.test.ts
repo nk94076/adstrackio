@@ -314,7 +314,7 @@ describe("Click analytics API (Phase 4)", () => {
         botClicks: 0,
         suspiciousClicks: 0,
         unknownClicks: 0,
-        uniqueClicks: 0,
+        uniqueClicksInRange: 0,
         botPercentage: 0,
       });
 
@@ -360,7 +360,7 @@ describe("Click analytics API (Phase 4)", () => {
       expect(summary.totalClicks).toBe(8);
       expect(summary.humanClicks).toBe(5);
       expect(summary.botClicks).toBe(3);
-      expect(summary.uniqueClicks).toBe(7); // 4 human pairs + 3 bot pairs, all distinct
+      expect(summary.uniqueClicksInRange).toBe(7); // 4 human pairs + 3 bot pairs, all distinct
       expect(summary.botPercentage).toBe(37.5);
     });
   });

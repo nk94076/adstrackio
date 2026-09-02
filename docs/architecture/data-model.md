@@ -129,15 +129,22 @@ Privacy-by-design notes on `Click`:
   classifications per click (e.g. if re-scored).
 - `deviceType`/`browser`/`browserVersion`/`os`/`osVersion` are populated
   by `UserAgentParser` (Phase 4 — `packages/shared/src/user-agent.ts`,
-  implemented by `UaParserUserAgentParser` in `apps/tracker`), except that
+  implemented by `UaParserUserAgentParser` in `apps/tracker`), written
+  synchronously in the same transaction as the `Click` row, except that
   `deviceType` is forced to `BOT` when the click's `botClassification` is
   `BOT`, overriding whatever the UA parser derived. `country`/`region`/
   `city`/`timezone` are populated by the pluggable `GeoLocationProvider`
-  (`packages/shared/src/geo-location.ts`) — `null` by default, since the
-  wired-in implementation (`NullGeoLocationProvider`) performs no lookup
-  at all unless an operator configures a real provider. A failure in
-  either enrichment step degrades to "unknown"/`null` rather than blocking
-  the `Click` write — see `docs/architecture/click-analytics.md#data-enrichment-strategy-keeping-the-redirect-hot-path-safe`.
+  (`packages/shared/src/geo-location.ts`) — `null` at write time and,
+  unless an operator configures a real provider, permanently (the wired-in
+  `NullGeoLocationProvider` performs no lookup at all). When a real
+  provider is configured, its lookup runs **in the background, after** the
+  `Click` row is written, and applies its result via a follow-up `UPDATE`
+  if/when it resolves — so a `Click` row's geo fields are eventually
+  consistent, not guaranteed populated at write time, even with a working
+  provider. A failure or delay in either enrichment step degrades to
+  "unknown"/`null` (UA) or simply leaves the fields `null` for longer (geo)
+  rather than blocking the `Click` write — see
+  `docs/architecture/click-analytics.md#data-enrichment-strategy-keeping-the-redirect-hot-path-safe`.
   `timezone` here is the click's *inferred location's* IANA zone from geo
   lookup — distinct from the analytics API's `timezone` query parameter
   used for time-bucketing.

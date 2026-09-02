@@ -82,13 +82,39 @@ This is an **estimate**, not a guarantee of distinct visitors, and the
 dashboard and API responses describe it as such rather than implying
 device-level or cookie-level accuracy.
 
+#### Two distinct uniqueness windows — `uniqueClicksInRange` vs. `uniqueClicksInBucket`
+
+Because summary/breakdown queries and timeseries queries apply this same
+`COUNT(DISTINCT (ipHash, userAgent))` formula over **different windows**,
+the API deliberately uses two different field names rather than reusing
+`uniqueClicks` for both — reusing one name invites a client to sum the
+per-bucket values and expect them to equal the range-wide total, which
+they generally will not:
+
+- **`ClickSummary.uniqueClicksInRange`** (and the same-named field on
+  `ClickBreakdownRow`) — computed once, over the entire requested
+  `from`–`to` range.
+- **`ClickTimeseriesPoint.uniqueClicksInBucket`** — computed
+  independently for each bucket. A visitor who clicks in two different
+  buckets is counted once in *each* bucket's `uniqueClicksInBucket`, so
+  **summing `uniqueClicksInBucket` across every point in a timeseries
+  response does not equal the `uniqueClicksInRange` from a summary
+  request over the identical `from`/`to`/filters** — the sum is always
+  greater than or equal to the range-wide total, and typically strictly
+  greater whenever any visitor returns in more than one bucket.
+
+The dashboard's KPI card is explicitly labeled "Unique Clicks (range)"
+and the breakdown tables' column is labeled "Unique (range)", both with a
+tooltip explaining the distinction, specifically so a per-bucket number
+is never displayed next to a range-wide one under an identical label.
+
 ### What is never exposed
 
 `ipHash`, the raw request IP, and any visitor fingerprint are never
-returned by any analytics endpoint or rendered in the dashboard. The
-`uniqueClicks` count is the only visitor-identity-adjacent value ever
-exposed, and it is a count, not the underlying `(ipHash, userAgent)` pairs
-— see "Privacy model" below.
+returned by any analytics endpoint or rendered in the dashboard.
+`uniqueClicksInRange`/`uniqueClicksInBucket` are the only
+visitor-identity-adjacent values ever exposed, and both are counts, never
+the underlying `(ipHash, userAgent)` pairs — see "Privacy model" below.
 
 ## Time buckets and timezone handling
 
@@ -204,7 +230,7 @@ interface ClickSummary {
   botClicks: number;
   suspiciousClicks: number;
   unknownClicks: number;
-  uniqueClicks: number;
+  uniqueClicksInRange: number; // whole from-to range — see "Unique click methodology"
   botPercentage: number; // 0–100, 2 decimal places
 }
 
@@ -213,7 +239,7 @@ interface ClickTimeseriesPoint {
   clicks: number;
   humanClicks: number;
   botClicks: number;
-  uniqueClicks: number;
+  uniqueClicksInBucket: number; // THIS bucket only — not summable into uniqueClicksInRange
 }
 
 interface ClickBreakdownRow {
@@ -222,9 +248,14 @@ interface ClickBreakdownRow {
   clicks: number;
   humanClicks: number;
   botClicks: number;
-  uniqueClicks: number;
+  uniqueClicksInRange: number; // whole from-to range, scoped to this row's group
 }
 ```
+
+`uniqueClicksInRange` and `uniqueClicksInBucket` are deliberately
+different field names, not the same field reused across shapes — see
+"Two distinct uniqueness windows" above for why summing one into the
+other produces a wrong number.
 
 Breakdown endpoints are capped at **100 rows** (`BREAKDOWN_ROW_LIMIT` in
 `apps/api/src/modules/analytics/analytics.service.ts`), ordered by
@@ -337,11 +368,15 @@ This is deliberate, not a placeholder to be embarrassed about:
 **Adding a real provider later**: implement `GeoLocationProvider.lookup`
 against `ip` and wire it into `buildTrackerApp`'s `geoLocationProvider`
 option (`apps/tracker/src/app.ts`) in place of `NullGeoLocationProvider`.
-The interface's `lookup` is `async`, but a network-backed implementation
-(a remote geo API) **must not** be awaited inline on the hot redirect path
-— see "Data enrichment strategy" below. A local, file-backed database
-lookup (e.g. MaxMind GeoLite2) is the recommended integration shape
-specifically because it's synchronous/local and has no such latency risk.
+The interface's `lookup` is `async` precisely because a real
+implementation is expected to be a remote network call (e.g. a hosted geo
+API) — `recordClick` never awaits it on the redirect path regardless (see
+"Data enrichment strategy" below), so a slow or even occasionally-hanging
+remote provider cannot add latency to a click. A local, file-backed
+database lookup (e.g. MaxMind GeoLite2) is still a reasonable choice when
+available, since it avoids depending on a third-party service's uptime,
+but it is not required for latency safety the way it would be if the
+lookup were on the critical path.
 
 **Privacy note on the input**: `lookup` takes the request's raw,
 transient IP — the same value used to compute `Click.ipHash` — because a
@@ -354,30 +389,57 @@ discarded, exactly like `hashIp` already does; only the coarse
 
 ## Data enrichment strategy: keeping the redirect hot path safe
 
-Phase 3's redirect latency requirement is unchanged by Phase 4. In
-`apps/tracker/src/modules/tracker/tracker.service.ts#recordClick`:
+Phase 3's redirect latency requirement is unchanged by Phase 4, and UA and
+geo enrichment are treated very differently in
+`apps/tracker/src/modules/tracker/tracker.service.ts#recordClick`
+precisely because they carry different latency risk:
 
-- `safeParseUserAgent` wraps `UserAgentParser.parse` in a `try/catch` —
-  the interface contract is "pure, synchronous, no I/O," so a throw here
-  is a bug in the parser, not an expected failure mode, but it's still
-  caught rather than trusted.
-- `safeLookupGeo` wraps `GeoLocationProvider.lookup` in a `try/catch`
-  around its `await` — a future network-backed provider is arbitrary
-  third-party code once configured, so its failure (timeout, DNS error,
-  bad response) must degrade gracefully.
-- **Both failures resolve to the "unknown" constant
-  (`UNKNOWN_DEVICE_INFO` / `UNKNOWN_GEO_LOCATION`) and the click write
-  proceeds normally.** Enrichment failure never prevents `Click`/`BotEvent`
-  from being written, and never prevents the redirect response from being
-  issued. Covered directly by
-  `apps/tracker/test/tracker.service.test.ts` (`recordClick` still writes
-  a `Click` row when the parser throws, when the geo provider throws
-  synchronously, and when its returned promise rejects) and
-  `apps/tracker/test/tracker.routes.test.ts` ("enrichment failure
-  isolation") at the HTTP level, asserting the `302` redirect still fires.
+- **UA parsing is synchronous and stays on the critical path.**
+  `safeParseUserAgent` wraps `UserAgentParser.parse` in a `try/catch` — the
+  interface contract is "pure, synchronous, no I/O" (see
+  `packages/shared/src/user-agent.ts`), so a throw here is a bug in the
+  parser, not an expected failure mode, and it carries no latency risk
+  worth deferring. Its result is written in the same transaction as the
+  `Click`/`BotEvent` rows, before the redirect is sent.
+- **Geo lookup is asynchronous and runs entirely off the critical path,
+  by construction — not merely wrapped for failure isolation.** A real
+  `GeoLocationProvider` is expected to be a network call once one is
+  configured, so even a *successful* lookup could otherwise add
+  unpredictable latency (slow DNS, a loaded remote API, a stalled TCP
+  connection) directly to every click. `recordClick` does not `await`
+  `GeoLocationProvider.lookup` at all before returning:
+  1. The `Click` row is written (in the same transaction as `BotEvent`)
+     with its geo fields left null.
+  2. `recordClick` returns immediately after that write — this is what
+     the redirect route handler awaits, and it resolves without ever
+     touching the geo provider's promise.
+  3. Only then does `enrichClickWithGeoInBackground` kick off
+     `GeoLocationProvider.lookup`, unawaited, in the background. If/when
+     it resolves with any non-null field, a follow-up `UPDATE` applies
+     the geo data to the already-written `Click` row. A throw, a
+     rejection, or a promise that never settles at all all resolve to
+     "leave the geo fields null" — none of them can affect the response
+     already sent to the client.
+- **A failing UA parser still can't block the write**: its failure
+  resolves to `UNKNOWN_DEVICE_INFO` inline, same as before.
+
+Enrichment failure — of either kind — never prevents `Click`/`BotEvent`
+from being written, and never prevents the redirect response from being
+issued. Covered directly by
+`apps/tracker/test/tracker.service.test.ts` (`recordClick` still writes a
+`Click` row when the parser throws, when the geo provider throws
+synchronously, when its returned promise rejects, when it never resolves
+at all during the test, and confirms the background `UPDATE` still lands
+once a slow provider does eventually resolve) and
+`apps/tracker/test/tracker.routes.test.ts` ("enrichment failure isolation"
+and "geo lookup latency isolation") at the HTTP level, asserting the `302`
+redirect still fires — including a case where the geo provider's promise
+is deliberately never resolved during the test, which would hang the test
+itself if the redirect handler were waiting on it anywhere on its path.
 
 `NullGeoLocationProvider` never performs a lookup at all, so the default
-configuration adds no latency to the hot path whatsoever.
+configuration adds no latency to the hot path whatsoever, and schedules no
+background work either.
 
 ## Privacy model
 
@@ -468,6 +530,18 @@ something implemented in Phase 4.
 - **No geo provider ships by default.** `country`/`region`/`city`/
   `timezone` (on `Click`) are `null` and report as `"Unknown"` in every
   breakdown unless an operator wires in a real `GeoLocationProvider`.
+- **Geo enrichment is eventually consistent, not immediate.** Because the
+  geo lookup runs in the background after the redirect (see "Data
+  enrichment strategy" above), a `Click` row's `country`/`region`/`city`/
+  `timezone` can briefly be `null` even with a real provider configured,
+  until that provider's promise resolves and the follow-up `UPDATE` lands
+  — typically milliseconds to low seconds after the click, but with no
+  hard upper bound if the provider itself is slow. An analytics query run
+  immediately after a click may undercount that click's geo breakdown by
+  one row; querying again shortly after resolves it. There is no retry or
+  dead-letter queue if the background update itself fails after the
+  provider succeeds (e.g. a dropped DB connection) — that click's geo
+  fields simply stay `null` permanently.
 - **Referrer grouping is hostname-only and lossy by design** — path and
   query string are discarded at query time (not at write time — the raw
   `Click.referrer` is unchanged from Phase 3), and a referrer that fails
