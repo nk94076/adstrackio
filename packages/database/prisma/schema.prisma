@@ -49,6 +49,14 @@ enum CampaignStatus {
   ARCHIVED
 }
 
+/// Routing action for SUSPICIOUS/UNKNOWN-classified traffic (Phase 5: Bot
+/// Detection Integration) — see packages/shared/src/bot-traffic-policy.ts.
+enum BotTrafficPolicyAction {
+  SAFE_PAGE
+  TARGET
+  BLOCK
+}
+
 enum TrackingLinkStatus {
   ACTIVE
   PAUSED
@@ -108,11 +116,11 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  memberships                OrganizationMember[]
-  auditLogs                  AuditLog[]             @relation("AuditLogActor")
-  referralConfigurations     ReferralConfiguration[] @relation("ReferralConfigurationCreatedBy")
-  referralProofsSubmitted    ReferralProof[]         @relation("ReferralProofSubmittedBy")
-  referralProofsReviewed     ReferralProof[]         @relation("ReferralProofReviewedBy")
+  memberships             OrganizationMember[]
+  auditLogs               AuditLog[]              @relation("AuditLogActor")
+  referralConfigurations  ReferralConfiguration[] @relation("ReferralConfigurationCreatedBy")
+  referralProofsSubmitted ReferralProof[]         @relation("ReferralProofSubmittedBy")
+  referralProofsReviewed  ReferralProof[]         @relation("ReferralProofReviewedBy")
 
   @@map("users")
 }
@@ -160,17 +168,17 @@ model OrganizationMember {
 // ---------------------------------------------------------------------------
 
 model TrackingDomain {
-  id                       String                   @id @default(cuid())
-  organizationId           String
-  hostname                 String                   @unique
-  verificationStatus       DomainVerificationStatus @default(PENDING)
-  verificationToken        String?
-  verificationRequestedAt  DateTime?
-  verifiedAt               DateTime?
-  sslStatus                DomainSslStatus          @default(NOT_CONFIGURED)
-  isActive                 Boolean                  @default(false)
-  createdAt                DateTime                 @default(now())
-  updatedAt                DateTime                 @updatedAt
+  id                      String                   @id @default(cuid())
+  organizationId          String
+  hostname                String                   @unique
+  verificationStatus      DomainVerificationStatus @default(PENDING)
+  verificationToken       String?
+  verificationRequestedAt DateTime?
+  verifiedAt              DateTime?
+  sslStatus               DomainSslStatus          @default(NOT_CONFIGURED)
+  isActive                Boolean                  @default(false)
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
 
   organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   campaigns     Campaign[]
@@ -206,35 +214,45 @@ model Destination {
 }
 
 model Campaign {
-  id               String         @id @default(cuid())
-  organizationId   String
-  name             String
-  status           CampaignStatus @default(DRAFT)
-  trackingDomainId String?
-  destinationId    String?
+  id                      String                 @id @default(cuid())
+  organizationId          String
+  name                    String
+  status                  CampaignStatus         @default(DRAFT)
+  trackingDomainId        String?
+  destinationId           String?
   /// Where the tracker sends traffic it classifies as BOT/automated,
   /// instead of the visible, request-supplied transparent redirection_url
   /// (Phase 3: Transparent Click Tracker). Server-configured only — never
   /// selectable by a request parameter. Null means "no safe page
   /// configured", in which case the tracker responds with a controlled
   /// 404 rather than guessing a destination.
-  safePageUrl      String?
-  budgetAmount     Decimal?       @db.Decimal(12, 2)
-  budgetCurrency   String?        @db.VarChar(3)
-  startDate        DateTime?
-  endDate          DateTime?
-  metadata         Json?
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
+  safePageUrl             String?
+  /// Routing policy for SUSPICIOUS/UNKNOWN-classified traffic (Phase 5:
+  /// Bot Detection Integration) — see
+  /// packages/shared/src/bot-traffic-policy.ts. BOT is always routed to
+  /// safePageUrl (or a controlled block if unset); HUMAN is always routed
+  /// to the transparent destination — those two are not configurable.
+  /// Defaults to TARGET, the implicit behavior every campaign already had
+  /// before this field existed (the previous detection engine never
+  /// produced SUSPICIOUS/UNKNOWN at all).
+  suspiciousTrafficPolicy BotTrafficPolicyAction @default(TARGET)
+  unknownTrafficPolicy    BotTrafficPolicyAction @default(TARGET)
+  budgetAmount            Decimal?               @db.Decimal(12, 2)
+  budgetCurrency          String?                @db.VarChar(3)
+  startDate               DateTime?
+  endDate                 DateTime?
+  metadata                Json?
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
 
   organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   trackingDomain TrackingDomain? @relation(fields: [trackingDomainId], references: [id])
   destination    Destination?    @relation(fields: [destinationId], references: [id])
 
-  trackingLinks           TrackingLink[]
-  clicks                  Click[]
-  conversions              Conversion[]
-  referralConfigurations   ReferralConfiguration[]
+  trackingLinks          TrackingLink[]
+  clicks                 Click[]
+  conversions            Conversion[]
+  referralConfigurations ReferralConfiguration[]
 
   @@index([organizationId])
   @@map("campaigns")
@@ -250,15 +268,15 @@ model Campaign {
 /// docs/compliance/google-transparent-tracker.md). It is not silently
 /// substituted for that parameter.
 model TrackingLink {
-  id               String              @id @default(cuid())
+  id               String             @id @default(cuid())
   campaignId       String
   trackingDomainId String
   destinationId    String
   slug             String
-  status           TrackingLinkStatus  @default(ACTIVE)
+  status           TrackingLinkStatus @default(ACTIVE)
   metadata         Json?
-  createdAt        DateTime            @default(now())
-  updatedAt        DateTime            @updatedAt
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
 
   campaign       Campaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   trackingDomain TrackingDomain @relation(fields: [trackingDomainId], references: [id], onDelete: Cascade)
@@ -315,7 +333,7 @@ model Click {
   osVersion      String?
 
   botClassification BotClassification? @default(UNKNOWN)
-  botScore           Float?
+  botScore          Float?
 
   requestMetadata Json?
 
@@ -367,15 +385,15 @@ model Conversion {
 /// through a single ingestion interface — see
 /// packages/shared/src/bot-detection.ts. No detection logic lives in Phase 1.
 model BotEvent {
-  id              String             @id @default(cuid())
+  id              String            @id @default(cuid())
   clickId         String
   classification  BotClassification
   score           Float?
   reasonCodes     String[]
   detectionSource String
-  occurredAt      DateTime           @default(now())
+  occurredAt      DateTime          @default(now())
   metadata        Json?
-  createdAt       DateTime           @default(now())
+  createdAt       DateTime          @default(now())
 
   click Click @relation(fields: [clickId], references: [id], onDelete: Cascade)
 
@@ -394,15 +412,15 @@ model BotEvent {
 /// approved ReferralProof — enforced in the service layer, see
 /// apps/api/src/modules/referrals/referral-configurations.service.ts.
 model ReferralConfiguration {
-  id                  String                       @id @default(cuid())
+  id                  String                      @id @default(cuid())
   organizationId      String
   campaignId          String?
   type                ReferralConfigurationType
-  status              ReferralConfigurationStatus  @default(INACTIVE)
+  status              ReferralConfigurationStatus @default(INACTIVE)
   customReferrerValue String?
   createdById         String
-  createdAt           DateTime                     @default(now())
-  updatedAt           DateTime                     @updatedAt
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   campaign     Campaign?    @relation(fields: [campaignId], references: [id])
@@ -415,17 +433,17 @@ model ReferralConfiguration {
 }
 
 model ReferralProof {
-  id                      String                     @id @default(cuid())
+  id                      String                    @id @default(cuid())
   referralConfigurationId String
   documentReference       String?
   evidenceUrl             String?
   submittedById           String
-  reviewStatus            ReferralProofReviewStatus  @default(PENDING)
+  reviewStatus            ReferralProofReviewStatus @default(PENDING)
   reviewedById            String?
   reviewedAt              DateTime?
   rejectionReason         String?
-  createdAt               DateTime                   @default(now())
-  updatedAt               DateTime                   @updatedAt
+  createdAt               DateTime                  @default(now())
+  updatedAt               DateTime                  @updatedAt
 
   referralConfiguration ReferralConfiguration @relation(fields: [referralConfigurationId], references: [id], onDelete: Cascade)
   submittedBy           User                  @relation("ReferralProofSubmittedBy", fields: [submittedById], references: [id])
