@@ -230,4 +230,39 @@ describe("HeuristicBotDetectionEngine", () => {
       expect(result.score).toBe(0);
     });
   });
+
+  describe("AbortSignal (cancellation contract)", () => {
+    it("accepts an AbortSignal without changing its classification (synchronous/local — nothing to cancel)", async () => {
+      const controller = new AbortController();
+      const result = await engine.classify({
+        clickId: "c1",
+        userAgent: CHROME_UA,
+        headers: REALISTIC_BROWSER_HEADERS,
+        signal: controller.signal,
+      });
+      expect(result.classification).toBe("HUMAN");
+    });
+
+    it("does not itself abort the signal it's given", async () => {
+      const controller = new AbortController();
+      await engine.classify({
+        clickId: "c1",
+        userAgent: CHROME_UA,
+        headers: REALISTIC_BROWSER_HEADERS,
+        signal: controller.signal,
+      });
+      expect(controller.signal.aborted).toBe(false);
+    });
+
+    it("still classifies correctly if the signal is already aborted before the call (never reads it)", async () => {
+      const controller = new AbortController();
+      controller.abort();
+      const result = await engine.classify({
+        clickId: "c1",
+        userAgent: "Googlebot/2.1",
+        signal: controller.signal,
+      });
+      expect(result.classification).toBe("BOT");
+    });
+  });
 });

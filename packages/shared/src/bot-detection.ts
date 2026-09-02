@@ -33,6 +33,27 @@ export interface BotDetectionInput {
   ipHash?: string;
   headers?: BotDetectionHeaderSignals;
   requestMetadata?: Record<string, unknown>;
+  /**
+   * Cancellation signal for this classification call. The caller (see
+   * `classifyWithSafeFallback` in
+   * apps/tracker/src/modules/bot-detection/classify-with-fallback.ts)
+   * aborts this signal when it gives up waiting on `classify()` — today,
+   * when its internal timeout fires.
+   *
+   * A synchronous/local engine (the current `HeuristicBotDetectionEngine`)
+   * has nothing to cancel and can safely ignore this field entirely.
+   *
+   * Any FUTURE engine that performs real asynchronous work — a network
+   * call to an external bot-intelligence provider, a worker thread, a
+   * queued job — MUST observe this signal and actually cancel/abort that
+   * underlying work when it fires (e.g. pass it to `fetch`, or otherwise
+   * tear down the in-flight operation). Timeout in this system is not
+   * merely "the caller stopped waiting for a value" — it is a request to
+   * stop the operation itself, so a slow or hung engine cannot leave
+   * connections, sockets, or other resources running under sustained
+   * traffic once the caller has already moved on and served the redirect.
+   */
+  signal?: AbortSignal;
 }
 
 export interface BotClassificationResult {

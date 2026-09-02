@@ -344,6 +344,66 @@ full tracker route asserting the redirect still completes (bounded, not
 hanging) and the persisted `Click`/`BotEvent` reflect the fallback
 classification and reason code.
 
+### Cancellation: the timeout actually cancels, it doesn't just stop waiting
+
+A naive timeout that merely stops *waiting* on `engine.classify()` would
+still leave that call's promise — and whatever produced it: a socket, an
+in-flight HTTP request, a worker — running in the background after the
+redirect has already been served. For the current synchronous
+`HeuristicBotDetectionEngine` this is harmless (there's no real operation
+to leave running), but the whole point of `BotDetectionEngine` is to be
+swappable for a future network-backed detector, and under sustained high
+traffic against a slow or hanging remote provider, "the timeout fires but
+the underlying call keeps running" accumulates unbounded outstanding
+work even though every individual redirect still completes on time — a
+genuine resource-exhaustion risk (sockets, memory, provider-side
+concurrency limits).
+
+So `classifyWithSafeFallback` is cancellation-aware, not just
+time-bounded:
+
+```ts
+interface BotDetectionInput {
+  // ...
+  signal?: AbortSignal;
+}
+```
+
+- `classifyWithSafeFallback` creates one `AbortController` per call and
+  passes `controller.signal` into `engine.classify()` as part of the
+  input.
+- If the 50ms timeout fires, it calls `controller.abort()` **before**
+  resolving with the fallback `UNKNOWN` result — the signal is guaranteed
+  aborted by the time the caller sees the timeout outcome.
+- `controller.abort()` is called **only** on timeout — never on a normal
+  resolution or an engine-thrown/rejected error, both of which have
+  already settled on their own with nothing left to cancel.
+
+**This places a contract on any future engine, not just an optional
+courtesy:** an engine that performs real asynchronous work — a `fetch` to
+an external bot-intelligence provider, a worker thread, a queued job —
+**MUST** observe `input.signal` and actually cancel/tear down that
+underlying operation when it fires (e.g. pass the signal straight through
+to `fetch`'s own `signal` option, or otherwise abort the in-flight
+request). Merely ignoring the signal and letting the operation run to
+completion in the background defeats the purpose and reintroduces the
+resource-exhaustion risk this exists to prevent.
+
+`HeuristicBotDetectionEngine` accepts `signal` (it's part of
+`BotDetectionInput`, which it must type against) but never reads it —
+documented explicitly in its own file as deliberate, not an oversight:
+every signal it computes is a synchronous regex/property check with
+nothing to cancel, so adding a listener would be artificial async
+plumbing wired to nothing real.
+
+Covered by dedicated tests: the timeout path aborts the signal it handed
+to the engine; a fake "well-behaved async engine" that listens for
+`abort` and only then settles is confirmed to actually receive the
+event; a synchronous throw does *not* abort the signal (nothing to
+cancel); and the pre-existing never-resolving-engine test still proves
+the HTTP redirect completes on time regardless of what the engine does
+with the signal afterward.
+
 ## Analytics compatibility
 
 Phase 4's analytics aggregation
@@ -495,8 +555,11 @@ claimed by this document or this implementation.
   implemented — deliberately, to keep this phase focused on local,
   deterministic, zero-network-dependency signals. A future phase adding
   one must give it an explicit timeout and safe-degradation behavior
-  (the same pattern `classifyWithSafeFallback` already establishes) and
-  must never let its unavailability become a redirect outage.
+  (the same pattern `classifyWithSafeFallback` already establishes),
+  must actually honor `BotDetectionInput.signal` and cancel its
+  underlying request/connection when aborted rather than merely ignoring
+  the signal (see "Cancellation" above), and must never let its
+  unavailability become a redirect outage.
 - **No tracker-level rate limiting.** See "Rate limiting / abuse
   considerations" above — unchanged from Phase 3, an extension point is
   documented, not implemented.

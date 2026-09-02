@@ -29,6 +29,16 @@ import type {
  * there is no code path anywhere that lets a request parameter (query
  * string, a header the client fully controls the meaning of, etc.) assert
  * its own bot/human status or influence the score directly.
+ *
+ * CANCELLATION: `classify` accepts `BotDetectionInput.signal` (an
+ * `AbortSignal` — see packages/shared/src/bot-detection.ts) but never
+ * reads it. This is deliberate, not an oversight: every signal above is a
+ * synchronous regex test or object-property check against data already in
+ * memory, so there is no in-flight operation to cancel. Adding an
+ * `AbortSignal` listener here would be artificial async plumbing with
+ * nothing real to abort. A future network-backed engine MUST observe the
+ * signal and actually cancel its underlying operation when it fires — see
+ * classify-with-fallback.ts's doc comment for why.
  */
 
 const DETECTION_SOURCE = "tracker-heuristic-placeholder";
