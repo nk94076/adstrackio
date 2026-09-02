@@ -19,11 +19,11 @@ so the roadmap this schema was designed against is explicit.
 | `OrganizationMember` | Join table: user ↔ organization, with a role | IMPLEMENTED |
 | `TrackingDomain` | A hostname an organization tracks clicks on | IMPLEMENTED (Phase 2) — real DNS TXT verification; activation gated on it. Phase 3's tracker requires VERIFIED + active before serving traffic |
 | `Destination` | The business URL a campaign/link points to | IMPLEMENTED (CRUD + URL validation). Administrative/informational only for tracker purposes as of Phase 3 — see `TrackingLink` below |
-| `Campaign` | Groups tracking links under a name/status/budget; also carries the Phase 3 Safe Page URL | IMPLEMENTED (CRUD). `safePageUrl` is Phase 3's minimal bot-routing foundation, not a routing-rules engine (FUTURE PHASE: Rules & Routing Engine) |
+| `Campaign` | Groups tracking links under a name/status/budget; also carries the Safe Page URL and bot-traffic policy | IMPLEMENTED (CRUD). `safePageUrl` (Phase 3) + `suspiciousTrafficPolicy`/`unknownTrafficPolicy` (Phase 5) are a minimal, explicit bot-routing policy, not a general routing-rules engine (FUTURE PHASE: Rules & Routing Engine) |
 | `TrackingLink` | A routable slug on a domain | IMPLEMENTED (Phase 3) — `apps/tracker`'s `GET /:slug` resolves and redirects through this |
 | `Click` | An individual inbound tracking event | IMPLEMENTED (Phase 3, enriched Phase 4) — written by the tracker on every resolved request; Phase 4 added real browser/OS enrichment and an optional geo-location provider (see `docs/architecture/click-analytics.md`) |
 | `Conversion` | A recorded conversion event | FOUNDATION ONLY — schema only, no postback ingestion (FUTURE PHASE: Conversion Tracking) |
-| `BotEvent` | A bot-detection verdict for a click | IMPLEMENTED (Phase 3) — written by the tracker via the explicitly-provisional `HeuristicBotDetectionEngine`; a real detection engine is FUTURE PHASE: Bot Detection Integration |
+| `BotEvent` | A bot-detection verdict for a click | IMPLEMENTED (Phase 3, integrated into routing Phase 5) — written by the tracker via the explicitly-provisional, multi-signal `HeuristicBotDetectionEngine`; not a production-grade or ML-based detector (see `docs/architecture/bot-detection.md`) |
 | `ReferralConfiguration` | How referral/attribution is labeled for a campaign | IMPLEMENTED, including the approval gate (app + database level) |
 | `ReferralProof` | Evidence supporting a custom partner attribution config | IMPLEMENTED |
 | `AuditLog` | Append-only record of administrative actions | IMPLEMENTED |
@@ -71,9 +71,13 @@ These four models are deliberately kept as separate concerns:
   `docs/compliance/google-transparent-tracker.md` for why.
 - **Campaign** — the organizational/business grouping (name, status,
   budget, flight dates). A campaign optionally references a default
-  `TrackingDomain` and `Destination`, and (Phase 3) carries `safePageUrl`
+  `TrackingDomain` and `Destination`, and carries `safePageUrl` (Phase 3)
   — the server-configured destination for traffic the tracker classifies
-  as a bot. `Campaign.status` does not currently gate traffic: only
+  as `BOT` — plus `suspiciousTrafficPolicy`/`unknownTrafficPolicy` (Phase
+  5, Prisma enum `BotTrafficPolicyAction`: `SAFE_PAGE`/`TARGET`/`BLOCK`,
+  both defaulting to `TARGET`) governing where `SUSPICIOUS`/`UNKNOWN`
+  traffic goes — see `docs/architecture/bot-detection.md`.
+  `Campaign.status` does not currently gate traffic: only
   `TrackingDomain` verification/activation and `TrackingLink.status` do.
 - **TrackingLink** — the actual routable unit: `(trackingDomainId, slug)`
   is unique. `apps/tracker`'s `GET /:slug` route resolves a request's
@@ -93,9 +97,12 @@ http(s) only, no userinfo, no control characters, bounded length) — not to
 architectural choice for Google Transparent Click Tracker compliance
 (the destination must be visible in the URL, not hidden behind a backend
 ID) — see `docs/compliance/google-transparent-tracker.md` for the full
-rationale and its accepted tradeoffs. A request classified as a bot is
+rationale and its accepted tradeoffs. A request classified `BOT` is
 redirected to `Campaign.safePageUrl` instead, or gets a controlled `404`
 if none is configured — never a silently-substituted destination.
+`SUSPICIOUS`/`UNKNOWN` requests (Phase 5) follow the campaign's own
+configured policy instead of a hardcoded rule — see
+`docs/architecture/bot-detection.md`.
 
 Splitting Destination from TrackingLink from Click matters for analytics:
 a Destination can be reused across many links; a TrackingLink can accrue
@@ -106,11 +113,15 @@ because the other does.
 
 These three models were designed in Phase 1 so Phase 3 (Transparent Click
 Tracker), Phase 4 (Click Analytics), Phase 5 (Bot Detection Integration),
-and Phase 7 (Conversion Tracking) could be built against a stable schema.
-Phase 3 now writes `Click` and `BotEvent` rows on every resolved tracker
-request (`apps/tracker/src/modules/tracker/tracker.service.ts`);
-`Conversion` remains schema-only — no postback ingestion exists yet
-(Phase 7).
+and Phase 7 (Conversion Tracking) could be built against a stable schema
+— none of them required a schema change to `Click`/`BotEvent` beyond what
+Phase 3/4 already added. Phase 3 writes `Click` and `BotEvent` rows on
+every resolved tracker request
+(`apps/tracker/src/modules/tracker/tracker.service.ts`); Phase 5 made the
+classification those rows carry actually gate the routing decision
+(see `docs/architecture/bot-detection.md`) without changing how they're
+written. `Conversion` remains schema-only — no postback ingestion exists
+yet (Phase 7).
 
 Privacy-by-design notes on `Click`:
 
@@ -150,12 +161,17 @@ Privacy-by-design notes on `Click`:
   used for time-bucketing.
 
 `BotEvent.detectionSource` and `reasonCodes` are written by whichever bot
-detection engine is wired in. Phase 3 wires in
-`HeuristicBotDetectionEngine` (`apps/tracker/src/modules/bot-detection/`)
-— an explicitly provisional user-agent heuristic (`detectionSource:
-"tracker-heuristic-placeholder"`), not the product's existing/planned
-bot-detection capability Phase 5 is expected to wire in through the same
-`BotDetectionEngine` interface (`packages/shared/src/bot-detection.ts`).
+detection engine is wired in. `HeuristicBotDetectionEngine`
+(`apps/tracker/src/modules/bot-detection/`) is wired in by default — a
+multi-signal but explicitly provisional heuristic (`detectionSource:
+"tracker-heuristic-placeholder"`; a safe-fallback wrapper produces
+`detectionSource: "tracker-fallback"` if the engine itself fails or times
+out), not a production-grade or ML-based detector. Phase 5 (Bot Detection
+Integration) made the classification these fields carry actually drive
+the tracker's routing decision for all four `BotClassification` values,
+not just `BOT` — see `docs/architecture/bot-detection.md`. Both fields
+remain internal: neither is exposed through the analytics API
+(`docs/architecture/click-analytics.md`).
 
 `Conversion` has optional `clickId`/`trackingLinkId` (not required) because
 a real-world conversion pipeline needs to handle conversions that arrive

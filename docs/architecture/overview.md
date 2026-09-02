@@ -2,15 +2,18 @@
 
 ## Status
 
-This document describes AdstrackIO's architecture as of **Phase 4 (Click
-Analytics)**. Phase 1 established the monorepo, data model,
+This document describes AdstrackIO's architecture as of **Phase 5 (Bot
+Detection Integration)**. Phase 1 established the monorepo, data model,
 authentication, and API foundation; Phase 2 (Domain Manager) added real
 DNS verification and domain activation; Phase 3 added the real tracker
 redirect endpoint; Phase 4 added User-Agent/geo enrichment on `Click` rows
 and a read-only analytics API + dashboard on top of them — see
-`docs/architecture/click-analytics.md`. Later phases (Bot Detection
-Integration, Campaign Manager, Conversion Tracking, Rules & Routing
-Engine, Affiliate/Partner System, Attribution & Advanced Reporting, API +
+`docs/architecture/click-analytics.md`; Phase 5 wired bot classification
+into the tracker's actual routing decision (SUSPICIOUS/UNKNOWN previously
+had no defined behavior) via a small, campaign-configurable policy
+abstraction — see `docs/architecture/bot-detection.md`. Later phases
+(Campaign Manager, Conversion Tracking, Rules & Routing Engine,
+Affiliate/Partner System, Attribution & Advanced Reporting, API +
 Integrations, Google Certification) build on top of what's here, without
 requiring a rewrite of it.
 
@@ -125,20 +128,23 @@ session model and the tradeoffs this accepts.
 - **packages/shared** defines the `TrackingResolver` and
   `BotDetectionEngine` interfaces, plus `validateTransparentRedirectUrl`
   (the tracker's URL-safety check) and `hashIp` (one-way IP hashing).
-  `TrackingResolver` is now implemented for real by
-  `PrismaTrackingResolver` (`apps/tracker`, Phase 3); `BotDetectionEngine`
-  currently has only the explicitly-provisional
-  `HeuristicBotDetectionEngine` (`apps/tracker`) — the "product's
-  existing/planned bot-detection capability" Phase 5 is meant to wire in
-  through the same interface hasn't landed yet. See the inline
-  documentation in `packages/shared/src/tracking-resolver.ts` and
+  `TrackingResolver` is implemented for real by `PrismaTrackingResolver`
+  (`apps/tracker`, Phase 3); `BotDetectionEngine` currently has only the
+  explicitly-provisional, though now multi-signal, `HeuristicBotDetectionEngine`
+  (`apps/tracker`) — not a production-grade or ML-based bot-detection
+  capability. See the inline documentation in
+  `packages/shared/src/tracking-resolver.ts` and
   `packages/shared/src/bot-detection.ts`. Phase 4 added two more
   interfaces in the same package following the same pattern:
   `UserAgentParser` (`packages/shared/src/user-agent.ts`, implemented by
   `UaParserUserAgentParser` in `apps/tracker`) and `GeoLocationProvider`
   (`packages/shared/src/geo-location.ts`, implemented by default as a
   no-op `NullGeoLocationProvider`) — see
-  `docs/architecture/click-analytics.md`.
+  `docs/architecture/click-analytics.md`. Phase 5 added
+  `packages/shared/src/bot-traffic-policy.ts` — a small, explicit
+  classification-to-routing-action resolver (`resolveBotRoutingAction`),
+  deliberately not the full Rules & Routing Engine Phase 8 is expected to
+  build — see `docs/architecture/bot-detection.md`.
 - **packages/validation** holds Zod schemas so the same validation rules
   can be reused by the API (server-side enforcement) and, if useful later,
   by the dashboard for client-side form validation — without duplicating
@@ -160,14 +166,19 @@ session model and the tradeoffs this accepts.
   optional, pluggable geo-location provider (no-op by default — see
   `docs/architecture/click-analytics.md`). Conversion analytics remains
   out of scope (Phase 7/10 — `Conversion` is still schema-only).
-- **Real bot detection** is not built. `BotEvent` schema and
-  `BotDetectionEngine` interface exist and are now actually written to by
-  Phase 3's tracker, but via `HeuristicBotDetectionEngine` — an explicitly
-  provisional user-agent heuristic, not the product's existing/planned
-  bot-detection capability Phase 5 is expected to wire in through the same
-  interface.
-- **Campaign routing rules** (Phase 8) are not built — Phase 3's Safe Page
-  is a single `Campaign.safePageUrl` field, not a routing-rules engine.
+- **Bot detection integration (Phase 5)** is implemented — the tracker's
+  routing decision now reads the `BotDetectionEngine` verdict for all four
+  classifications (`HUMAN`/`BOT`/`SUSPICIOUS`/`UNKNOWN`), not just `BOT`;
+  `SUSPICIOUS`/`UNKNOWN` route through a small, campaign-configurable
+  policy (`Campaign.suspiciousTrafficPolicy`/`unknownTrafficPolicy`,
+  default `TARGET`). The engine itself
+  (`HeuristicBotDetectionEngine`) remains an explicitly provisional,
+  multi-signal heuristic — not a production-grade, ML-based, or
+  externally-validated bot-detection capability. See
+  `docs/architecture/bot-detection.md`.
+- **Campaign routing rules** (Phase 8) are not built — Phase 3/5's Safe
+  Page + bot-traffic policy are a single `Campaign.safePageUrl` field and
+  two enum fields, not a general routing-rules engine.
 - **Postbacks/webhooks for conversions** (Phase 7) are out of scope so far.
 - **Any Google Transparent Click Tracker certification claim** — see
   `docs/compliance/google-transparent-tracker.md`.

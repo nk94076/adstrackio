@@ -227,11 +227,17 @@ security properties specifically.
   URL, which is what would turn this into an SSRF vector rather than "just"
   an open redirect.
 - **Bot classification cannot be influenced by the client.**
-  `HeuristicBotDetectionEngine` computes its verdict solely from the
-  request's own `User-Agent` header; no query parameter, custom header, or
-  other client-supplied value is read for this decision. Covered by a test
-  that sends `?isBot=false&bot=false` alongside a known-bot UA and asserts
-  the Safe Page still fires.
+  `HeuristicBotDetectionEngine` computes its verdict solely from
+  server-observed request data — the `User-Agent` header and a small,
+  explicit whitelist of other headers (`Accept`, `Accept-Language`,
+  `Sec-Fetch-Mode/Site/Dest`, Phase 5); no query parameter, arbitrary
+  custom header, or other client-supplied value is ever read for this
+  decision. Covered by tests that send `?isBot=false&bot=false` (and,
+  Phase 5, `classification=HUMAN&score=0&safePageUrl=...`) alongside a
+  known-bot UA and assert the Safe Page still fires unchanged, and a test
+  confirming arbitrary out-of-whitelist headers (e.g. `X-Bot-Override`)
+  have no effect. See `docs/architecture/bot-detection.md` for the full
+  detection architecture and Phase 5's routing integration.
 - **Click IDs are not sequential or guessable.** Generated with
   `crypto.randomUUID()` (`apps/tracker/src/modules/tracker/click-id.ts`)
   rather than relying on the `Click` model's default `cuid()`, and never
@@ -239,6 +245,47 @@ security properties specifically.
   `Click` row and internal log correlation.
 - **No raw IP is ever stored.** `hashIp` (`packages/shared/src/ip-hash.ts`)
   salts and one-way-hashes the request IP before it reaches `Click.ipHash`.
+
+## Bot Detection Integration (apps/tracker, Phase 5)
+
+Full design rationale is in `docs/architecture/bot-detection.md`; this
+section covers its security-relevant properties specifically.
+
+- **The Safe Page destination is never client-controlled, for any
+  classification.** `resolveBotRoutingAction`
+  (`packages/shared/src/bot-traffic-policy.ts`) only ever reads
+  `resolution.safePageUrl`, sourced from `Campaign.safePageUrl` — never
+  from `redirection_url`, a query parameter, or a header. Covered by
+  regression tests for `BOT` (always routed to `SAFE_PAGE`) and for
+  `SUSPICIOUS`/`UNKNOWN` when a campaign's policy resolves to `SAFE_PAGE`,
+  each asserting an attacker-controlled `redirection_url`
+  (`https://attacker.example/phish`) never reaches the response's
+  `Location` header.
+- **`BLOCK` never falls back to a guessed destination.** Even when a
+  Safe Page *is* configured, a `BLOCK`-policy classification returns the
+  same controlled `404` as "no Safe Page configured" — it does not
+  silently degrade to `SAFE_PAGE` or `TARGET`. Covered by a dedicated
+  test.
+- **A detection engine failure degrades to `UNKNOWN`, never to `HUMAN`
+  or `BOT`.** `classifyWithSafeFallback`
+  (`apps/tracker/src/modules/bot-detection/classify-with-fallback.ts`)
+  catches a throw, a rejected promise, or a 50ms timeout and always
+  returns `UNKNOWN` — never assumes a failure means a request is
+  trustworthy (`HUMAN`) or automatically blocks it (`BOT`) without
+  evidence. The resulting `UNKNOWN` verdict is then routed through the
+  campaign's own `unknownTrafficPolicy` like any other `UNKNOWN`
+  classification, not a special-cased bypass.
+- **No arbitrary request header reaches the detection engine.** Only five
+  explicitly named headers are extracted
+  (`extractDetectionHeaderSignals` in
+  `apps/tracker/src/modules/tracker/tracker.routes.ts`) — a
+  client-supplied header outside that whitelist (e.g.
+  `X-Bot-Override: false`) is never read by the classification path at
+  all. Covered by a dedicated test.
+- **The routing-policy resolver is pure and synchronous.**
+  `resolveBotRoutingAction` performs no I/O and cannot itself fail or
+  hang; the only failure surface is the detection engine call that feeds
+  it, which is independently guarded (above).
 
 ## Click Analytics (apps/api, Phase 4)
 
@@ -351,8 +398,14 @@ section covers its security-relevant properties specifically.
 - **The transparent redirect endpoint is an open redirect by design** —
   see `docs/compliance/google-transparent-tracker.md` for why this is
   accepted rather than fixed, and what it does and doesn't restrict.
-- **`HeuristicBotDetectionEngine` is a basic, explicitly-provisional
-  placeholder**, not a production bot-detection system. It will
-  misclassify some real traffic in both directions; Phase 5 is expected to
-  replace it with the product's real capability through the same
-  `BotDetectionEngine` interface.
+- **`HeuristicBotDetectionEngine` is a multi-signal but still
+  explicitly-provisional heuristic** (Phase 5), not a production-grade or
+  ML-based bot-detection system. It will misclassify some real traffic in
+  both directions under adversarial conditions — see
+  `docs/architecture/bot-detection.md` for the full scoring model and its
+  limitations. A future non-heuristic engine can still be dropped in
+  through the same `BotDetectionEngine` interface without touching the
+  tracker route.
+- **No tracker-level rate limiting, still** (Phase 5 did not add one —
+  see `docs/architecture/bot-detection.md#rate-limiting--abuse-considerations`
+  for the documented extension point).
