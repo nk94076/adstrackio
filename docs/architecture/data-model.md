@@ -19,10 +19,10 @@ so the roadmap this schema was designed against is explicit.
 | `OrganizationMember` | Join table: user ↔ organization, with a role | IMPLEMENTED |
 | `TrackingDomain` | A hostname an organization tracks clicks on | IMPLEMENTED (Phase 2) — real DNS TXT verification; activation gated on it. Phase 3's tracker requires VERIFIED + active before serving traffic |
 | `Destination` | The business URL a campaign/link points to | IMPLEMENTED (CRUD + URL validation). Administrative/informational only for tracker purposes as of Phase 3 — see `TrackingLink` below |
-| `Campaign` | Groups tracking links under a name/status/budget; also carries the Safe Page URL and bot-traffic policy | IMPLEMENTED (CRUD). `safePageUrl` (Phase 3) + `suspiciousTrafficPolicy`/`unknownTrafficPolicy` (Phase 5) are a minimal, explicit bot-routing policy, not a general routing-rules engine (FUTURE PHASE: Rules & Routing Engine) |
-| `TrackingLink` | A routable slug on a domain | IMPLEMENTED (Phase 3) — `apps/tracker`'s `GET /:slug` resolves and redirects through this |
+| `Campaign` | Groups tracking links under a name/status/budget; also carries the Safe Page URL and bot-traffic policy | IMPLEMENTED (CRUD + Phase 6 status lifecycle). `safePageUrl` (Phase 3) + `suspiciousTrafficPolicy`/`unknownTrafficPolicy` (Phase 5) are a minimal, explicit bot-routing policy, not a general routing-rules engine (FUTURE PHASE: Rules & Routing Engine) |
+| `TrackingLink` | A routable slug on a domain | IMPLEMENTED (Phase 3, status lifecycle Phase 6) — `apps/tracker`'s `GET /:slug` resolves and redirects through this |
 | `Click` | An individual inbound tracking event | IMPLEMENTED (Phase 3, enriched Phase 4) — written by the tracker on every resolved request; Phase 4 added real browser/OS enrichment and an optional geo-location provider (see `docs/architecture/click-analytics.md`) |
-| `Conversion` | A recorded conversion event | FOUNDATION ONLY — schema only, no postback ingestion (FUTURE PHASE: Conversion Tracking) |
+| `Conversion` | A reported conversion event, attributed through a `Click` | IMPLEMENTED (Phase 7) — always click-attributed (campaign/tracking-link IDs derived server-side, database-trigger-enforced), deduplicated via an optional unique `externalConversionId`, own status lifecycle (see `docs/architecture/conversion-tracking.md`) |
 | `BotEvent` | A bot-detection verdict for a click | IMPLEMENTED (Phase 3, integrated into routing Phase 5) — written by the tracker via the explicitly-provisional, multi-signal `HeuristicBotDetectionEngine`; not a production-grade or ML-based detector (see `docs/architecture/bot-detection.md`) |
 | `ReferralConfiguration` | How referral/attribution is labeled for a campaign | IMPLEMENTED, including the approval gate (app + database level) |
 | `ReferralProof` | Evidence supporting a custom partner attribution config | IMPLEMENTED |
@@ -135,8 +135,8 @@ every resolved tracker request
 (`apps/tracker/src/modules/tracker/tracker.service.ts`); Phase 5 made the
 classification those rows carry actually gate the routing decision
 (see `docs/architecture/bot-detection.md`) without changing how they're
-written. `Conversion` remains schema-only — no postback ingestion exists
-yet (Phase 7).
+written. Phase 7 built `Conversion`'s actual ingestion — see below and
+`docs/architecture/conversion-tracking.md`.
 
 Privacy-by-design notes on `Click`:
 
@@ -188,15 +188,44 @@ not just `BOT` — see `docs/architecture/bot-detection.md`. Both fields
 remain internal: neither is exposed through the analytics API
 (`docs/architecture/click-analytics.md`).
 
-`Conversion` has optional `clickId`/`trackingLinkId` (not required) because
-a real-world conversion pipeline needs to handle conversions that arrive
-without a cleanly matched click (e.g. view-through, delayed postbacks) —
-Phase 7 will build the actual ingestion; Phase 1 only ensures the schema
-doesn't have to change shape to support that later. Both are indexed
-(`conversions_trackingLinkId_idx`, `conversions_clickId_idx`) since "did
-this click convert" / "conversions for this link" are core attribution
-lookups — Postgres doesn't auto-index foreign key columns, and Phase 1
-CTO review found these two missing.
+**Revised in Phase 7:** Phase 1 originally left `Conversion.clickId`/
+`trackingLinkId` optional, anticipating a future pipeline that might need
+to handle conversions arriving without a cleanly matched click (e.g.
+view-through attribution, delayed postbacks with no click reference at
+all). Phase 7's actual brief took the opposite, stricter position: "the
+conversion must NEVER be allowed to invent or override its campaign,
+tracking link, organization, or click relationship" — which only has an
+enforceable answer if a click is mandatory. A `clickId`-less "conversion"
+would have nothing to derive `campaignId`/`trackingLinkId` from except
+direct client assertion, exactly the spoofing surface this phase exists to
+close. `clickId` and `trackingLinkId` are therefore both `NOT NULL` as of
+Phase 7 (migration `20260902155750_conversion_tracking_foundation`);
+`campaignId` was already required. View-through/click-less attribution, if
+ever built, is a deliberately different, harder problem (proving a
+conversion happened *without* the identifying signal a click provides) —
+left to a future phase rather than solved by quietly allowing every
+conversion to skip attribution.
+
+`campaignId`/`trackingLinkId`/`organizationId` are still stored as direct
+columns on `Conversion` (not read via a join to `Click` on every query) —
+denormalized for query performance, exactly as `Click.botClassification`/
+`botScore` denormalize the latest `BotEvent`. Unlike that pair, though,
+this phase's brief demanded these three "can NEVER disagree with Click,"
+so a database trigger (`enforce_conversion_click_attribution`) derives
+them from the referenced click at insert time and forbids changing any of
+the four (`clickId` included) afterward — see
+`docs/architecture/conversion-tracking.md#click-attribution` for the full
+design, including why this is enforced at both the service layer and the
+database.
+
+Indexes were redesigned around the query patterns Phase 7's analytics
+actually needs: `(campaignId, occurredAt)` and `(trackingLinkId,
+occurredAt)` (composite, replacing Phase 1's bare `campaignId`/
+`trackingLinkId` indexes — every real query filters by both dimensions
+together), `(status, occurredAt)` (new), and a unique
+`(organizationId, externalConversionId)` for deduplication (see
+`docs/architecture/conversion-tracking.md#deduplication`). `clickId` keeps
+its original bare index — point lookups by click, not a ranged scan.
 
 ### Flagged for the phase that scales this up (not fixed now)
 

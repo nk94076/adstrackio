@@ -352,6 +352,86 @@ section covers its security-relevant properties specifically.
   permanently retiring a campaign's live traffic is a bigger blast radius
   than editing its configuration.
 
+## Conversion Tracking (apps/api, Phase 7)
+
+Full design rationale is in `docs/architecture/conversion-tracking.md`;
+this section covers its security-relevant properties specifically.
+
+- **Campaign/tracking-link attribution can never be client-supplied, and
+  is enforced twice.** `createConversionSchema`
+  (`packages/validation/src/conversions.ts`) has no `campaignId`/
+  `trackingLinkId`/`organizationId` fields at all — a request that
+  includes them has those keys silently stripped, the same non-strict
+  parsing Phase 6 relies on for its own PATCH bodies. `createConversion`
+  reads them from the referenced `Click` row instead. As a database-level
+  backstop, a trigger (`enforce_conversion_click_attribution`, migration
+  `20260902155750_conversion_tracking_foundation`) re-derives and
+  validates these fields at insert and forbids changing any of them
+  (`clickId` included) afterward — a conversion's attribution can never
+  disagree with its click even for a write that bypasses the service
+  layer entirely (a raw SQL statement, a future admin tool, a bug).
+  Covered by `apps/api/test/conversion-tracking.test.ts` ("ignores a
+  client-supplied campaignId/trackingLinkId/organizationId override
+  attempt").
+- **Cross-org click attribution is a uniform 404, not a distinguishable
+  403/400.** A `clickId` belonging to another organization is
+  indistinguishable from one that doesn't exist — both fail the same
+  `clicks.findFirst({ where: { id, organizationId } })` lookup and return
+  the same `404`, so a caller can never use this endpoint to probe
+  whether a given click ID is real in an organization they don't belong
+  to. Same uniform-not-found convention this codebase already applies to
+  campaign/tracking-domain lookups.
+- **`clickId` is not an authorization credential.** Knowing a click ID is
+  not sufficient to create a conversion against it — the caller must also
+  be an authenticated, organization-scoped member with at least `MEMBER`
+  role. Click IDs are UUIDs (`crypto.randomUUID()`, unguessable), but that
+  property exists for Phase 3/4 reasons (never appended to the outward
+  redirect URL — see `docs/compliance/google-transparent-tracker.md`),
+  not because this phase treats possessing one as proof of authorization.
+- **Duplicate submissions are prevented at the database level, not by a
+  check-then-insert race.** The unique index
+  `conversions_organizationId_externalConversionId_key` is the actual
+  enforcement point; `createConversion` attempts the insert directly and
+  translates the resulting unique-violation (Prisma `P2002`) to a `409`.
+  Two concurrent requests with the same `externalConversionId` both reach
+  the database — exactly one insert can succeed. Covered by a test that
+  fires two identical requests concurrently via `Promise.all` and asserts
+  exactly one conversion exists afterward.
+- **Status can never be forced through a generic update endpoint** — there
+  is no `PATCH` for conversions at all, only the three explicit
+  `POST .../approve`, `.../reject`, `.../reverse` endpoints (no request
+  body), each validated against `packages/shared/src/conversion-lifecycle.ts`
+  before writing anything. Concurrent status changes are resolved by the
+  same conditional-`updateMany` pattern Phase 6 established (loser gets a
+  `409`, never a silently clobbered write).
+- **Metadata has explicit size/depth limits** (`boundedMetadataSchema`,
+  `packages/validation/src/conversions.ts`): serialized size capped at
+  10,000 bytes, nesting depth capped at 5 levels. Unlike
+  Campaign/Destination/TrackingLink's `metadata` fields (no such limit),
+  a conversion is the first write path in this codebase callable by a
+  potentially automated/machine caller — an advertiser's own
+  conversion-reporting integration — rather than only a human filling out
+  a dashboard form, making an unbounded JSON payload a more credible
+  abuse vector here specifically.
+- **Monetary value is validated, not trusted as opaque.** `value` must be
+  finite (rejects `NaN`/`Infinity`, which JSON itself can't represent
+  directly but a malformed numeric string could smuggle past a looser
+  check), non-negative, and capped at the largest amount
+  `Decimal(12,2)` can hold — an out-of-range submission fails with a
+  clean `400` rather than a raw database error. A `REVERSED` conversion's
+  `value` is never modified or negated; only its `status` changes — see
+  `docs/architecture/conversion-tracking.md#reversal-not-negation`.
+- **`occurredAt` is bounded, not an unconditionally trusted client
+  clock.** Rejected if more than 5 minutes ahead of the server's own
+  clock at request time (absorbs ordinary clock drift while catching
+  absurd future dates); no lower bound, since a legitimately backfilled
+  conversion may reference an old click.
+- **RBAC gates status decisions above ingestion.** Reporting a conversion
+  is `MEMBER`-level (same tier as creating a campaign/tracking link);
+  `approve`/`reject`/`reverse` require `ADMIN` — a compromised or
+  careless `MEMBER` account can report events but cannot single-handedly turn
+  them into approved, revenue-counted conversions.
+
 ## Click Analytics (apps/api, Phase 4)
 
 Full design rationale is in `docs/architecture/click-analytics.md`; this
