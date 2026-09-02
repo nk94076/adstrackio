@@ -1,9 +1,14 @@
 import pino, { type Logger, type LoggerOptions } from "pino";
 
 /**
- * Field name fragments that must never appear unredacted in logs. Matched
- * case-insensitively against object keys at any depth via pino's redact
- * wildcard paths.
+ * Exact field names that must never appear unredacted in logs. pino/fast-redact
+ * paths match a literal property name per path segment, not a substring —
+ * "token" does NOT catch a key named "verificationToken" — so a new
+ * sensitive field needs its own exact entry here rather than assuming an
+ * existing entry's name covers it. Matched at up to two levels of nesting
+ * via the wildcard paths generated below (`*.<key>`, `*.*.<key>`); a field
+ * sensitive enough to log needs to be nested no deeper than that for this
+ * to catch it.
  */
 const SENSITIVE_KEYS = [
   "password",
@@ -11,6 +16,7 @@ const SENSITIVE_KEYS = [
   "token",
   "accessToken",
   "refreshToken",
+  "verificationToken",
   "authorization",
   "cookie",
   "secret",

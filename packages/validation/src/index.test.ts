@@ -39,16 +39,23 @@ describe("loginSchema", () => {
 });
 
 describe("createTrackingDomainSchema", () => {
+  // This schema only validates shape (a non-empty, reasonably-sized string);
+  // real hostname format validation (rejecting URLs, paths, IPs, localhost,
+  // etc.) lives in normalizeTrackingHostname (@adstrackio/shared), applied
+  // in the domains service — see packages/shared/src/hostname.test.ts and
+  // apps/api/test/domains-lifecycle.test.ts for that coverage.
   it("accepts a valid hostname", () => {
     expect(
       createTrackingDomainSchema.safeParse({ hostname: "track.example.com" }).success,
     ).toBe(true);
   });
 
-  it("rejects an invalid hostname", () => {
-    expect(createTrackingDomainSchema.safeParse({ hostname: "not a hostname" }).success).toBe(
-      false,
-    );
+  it("rejects an empty hostname", () => {
+    expect(createTrackingDomainSchema.safeParse({ hostname: "" }).success).toBe(false);
+  });
+
+  it("rejects a missing hostname", () => {
+    expect(createTrackingDomainSchema.safeParse({}).success).toBe(false);
   });
 });
 

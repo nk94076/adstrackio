@@ -115,7 +115,12 @@ session model and the tradeoffs this accepts.
 ## What Phase 1 deliberately does not implement
 
 - Real DNS/SSL verification for tracking domains (`TrackingDomain` starts
-  `PENDING`; see Domain Manager, Phase 2).
+  `PENDING`). **Update: DNS verification and the activation lifecycle have
+  since been implemented in Phase 2 (Domain Manager)** — see
+  `docs/architecture/data-model.md` and
+  `docs/architecture/security.md#domain-activation-invariant`. SSL/TLS
+  certificate provisioning remains unimplemented (`sslStatus` stays
+  `NOT_CONFIGURED`).
 - Actual click redirection (`TrackingResolver` rejects; see Transparent
   Click Tracker, Phase 3).
 - Click/conversion analytics dashboards (the schema exists; reporting is

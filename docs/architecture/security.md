@@ -80,6 +80,63 @@ a future admin tool, or a data migration. Both layers are covered by
 `apps/api/test/referral-workflow.test.ts`, including a test that attempts
 the raw-SQL bypass directly and asserts the trigger rejects it.
 
+## Domain activation invariant
+
+A `TrackingDomain` cannot become `isActive = true` without first reaching
+`verificationStatus = VERIFIED` (Phase 2: Domain Manager). Like the referral
+activation gate above, this is enforced at two layers:
+
+- **Service layer**: `activateTrackingDomain`
+  (`apps/api/src/modules/domains/domains.service.ts`) performs the check and
+  the write in a single conditional `updateMany` (`WHERE id = ... AND
+  verificationStatus = 'VERIFIED'`) rather than a separate read-then-write,
+  so a concurrent verification-status change can't open a window where an
+  unverified domain gets activated; a zero-row update result is surfaced as
+  `409 Conflict`.
+- **Database layer**: a `CHECK` constraint,
+  `tracking_domains_active_requires_verified` (migration
+  `20260902061926_domain_manager_verification_fields`), rejects any row
+  where `isActive` is true and `verificationStatus` isn't `VERIFIED` —
+  including a raw SQL statement that bypasses the API entirely. See
+  `apps/api/test/domains-lifecycle.test.ts` ("database-level activation
+  invariant") for a test that performs exactly that raw-SQL bypass and
+  asserts it's rejected.
+
+Verification itself is never client-asserted: `POST
+.../domains/:domainId/verify` performs a real DNS TXT-record lookup
+(`apps/api/src/modules/domains/dns-verification.ts`, using Node's built-in
+`dns/promises` resolver) against a token the server generated — there is no
+request field a client can set to force `verified: true` or
+`status: VERIFIED/ACTIVE`; the verify/activate/deactivate endpoints don't
+even parse a request body. The DNS check is a lookup only, never an HTTP
+fetch to a client-influenced URL, so it carries no SSRF risk.
+
+**Verification token lifecycle.** The token is generated once, at domain
+creation, and is never rotated by a retry: `verifyTrackingDomain` reuses
+`domain.verificationToken` on every subsequent call rather than generating
+a fresh one, because regenerating it on retry would invalidate whatever DNS
+TXT record the customer just published for the original value — a token
+should only ever change if the domain itself does (a new domain, a new
+token). `verificationRequestedAt` is stamped on every attempt and doubles
+as a per-domain retry cooldown (`VERIFICATION_RETRY_COOLDOWN_MS`, currently
+10s): calling `/verify` again before the cooldown elapses returns `429
+RATE_LIMITED` without touching status or token. This exists to stop the
+endpoint from being hammered — each call performs a real DNS lookup and
+writes two audit log entries — not for any correctness reason. See
+`apps/api/test/domains-lifecycle.test.ts` ("verification retry/regeneration
+semantics") for the tests pinning this down.
+
+The raw token itself is not treated as a secret in the sense of "must never
+be disclosed to its own organization" (it's designed to be published in
+public DNS), but it is kept out of every API response except wrapped inside
+`verificationInstructions.recordValue`, and out of audit log metadata
+entirely (only `hostname` is recorded). It is also an explicit entry in
+`packages/logger`'s redaction list (`verificationToken`) — necessary
+because pino/fast-redact paths match an exact property name per segment,
+so the existing `"token"` entry does **not** catch a field named
+`verificationToken`; a field like this needs its own explicit entry rather
+than assuming a broader existing one covers it.
+
 ## Input validation
 
 Every mutating endpoint validates its body with a Zod schema from

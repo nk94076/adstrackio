@@ -145,9 +145,17 @@ tradeoffs for a Phase 1 foundation, not oversights.
 
 ## What's next (not implemented — do not build ahead of the roadmap)
 
-Phase 2 onward (Domain Manager, Transparent Click Tracker, Click Analytics,
-Bot Detection Integration, Campaign Manager, Conversion Tracking, Rules &
-Routing Engine, Affiliate/Partner System, Attribution & Advanced Reporting,
-API + Integrations, Google Certification Preparation & Submission) build on
-this foundation. See `docs/architecture/overview.md` for the boundaries
-Phase 1 set up specifically so those phases don't require a rewrite.
+**Phase 2 (Domain Manager) is implemented**: organizations can create
+tracking domains, verify ownership via a real, server-checked DNS TXT
+record, and activate a domain only once verified. See
+`docs/architecture/data-model.md` and
+`docs/architecture/security.md#domain-activation-invariant`. It is a
+control-plane feature only — no redirect, destination resolution, click
+logging, or bot routing.
+
+Phase 3 onward (Transparent Click Tracker, Click Analytics, Bot Detection
+Integration, Campaign Manager, Conversion Tracking, Rules & Routing Engine,
+Affiliate/Partner System, Attribution & Advanced Reporting, API +
+Integrations, Google Certification Preparation & Submission) build on this
+foundation. See `docs/architecture/overview.md` for the boundaries Phase 1
+set up specifically so those phases don't require a rewrite.
