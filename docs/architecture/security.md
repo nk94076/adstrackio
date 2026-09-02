@@ -147,11 +147,23 @@ response rather than leaking a raw stack trace).
 
 ## SQL injection
 
-All database access goes through Prisma's generated client
-(`packages/database`), which parameterizes queries. The one place raw SQL
-is used is the test-only `resetDatabase()` helper
-(`apps/api/test/db-reset.ts`), which truncates tables between test runs —
-it is never reachable from application code or any HTTP route.
+Nearly all database access goes through Prisma's generated client
+(`packages/database`), which parameterizes queries automatically. The
+test-only `resetDatabase()` helper (`apps/api/test/db-reset.ts`), which
+truncates tables between test runs, uses raw SQL but is never reachable
+from application code or any HTTP route.
+
+**Click Analytics (Phase 4)** is the first application-code use of raw
+SQL, via `prisma.$queryRaw` with `Prisma.sql`/`Prisma.join` in
+`apps/api/src/modules/analytics/analytics.service.ts` — needed for
+aggregation (`COUNT`/`GROUP BY`/`date_trunc`) Prisma's query builder
+doesn't expose. Every value that varies per request (`organizationId`,
+the date range, filter IDs, `timezone`, the `bucket` unit) is passed as a
+tagged-template parameter, never string-concatenated into the query text,
+so it is parameterized exactly the same way Prisma's own query builder
+would parameterize it. `$queryRawUnsafe` (which takes a plain string and
+would require the caller to parameterize by hand) is not used anywhere in
+this module.
 
 ## Consistent API error format
 
@@ -227,6 +239,53 @@ security properties specifically.
   `Click` row and internal log correlation.
 - **No raw IP is ever stored.** `hashIp` (`packages/shared/src/ip-hash.ts`)
   salts and one-way-hashes the request IP before it reaches `Click.ipHash`.
+
+## Click Analytics (apps/api, Phase 4)
+
+Full design rationale is in `docs/architecture/click-analytics.md`; this
+section covers its security-relevant properties specifically.
+
+- **No new authorization path.** Every analytics endpoint uses the same
+  `[fastify.authenticate, fastify.requireOrganizationMember("VIEWER")]`
+  preHandler pair as every other read endpoint — there is no
+  analytics-specific role check, weaker default, or bypass.
+- **Every query is unconditionally organization-scoped.** `buildWhere`
+  (`apps/api/src/modules/analytics/analytics.service.ts`) always includes
+  `organizationId = $1` before any optional filter is applied, so
+  filtering by another organization's `campaignId`/`trackingLinkId`/
+  `trackingDomainId` can only ever produce an empty result — never another
+  tenant's data. Covered by `apps/api/test/analytics.test.ts`
+  ("organization isolation").
+- **All query parameters are validated before reaching SQL.**
+  `packages/validation/src/analytics.ts` enforces: `from`/`to` are valid
+  dates with `from <= to`; the resolved range is capped at 366 days;
+  `campaignId`/`trackingLinkId`/`trackingDomainId` are well-formed cuids;
+  `timezone` is a real IANA name (validated via `Intl.DateTimeFormat`,
+  which also rejects injection-shaped strings); `bucket` is one of a fixed
+  enum. Every value that reaches a raw SQL query
+  (`analytics.service.ts`) does so as a `Prisma.sql`-parameterized value,
+  never string-concatenated — including `timezone` and `bucket`, verified
+  directly against Postgres to carry no injection risk despite going
+  inside `date_trunc(...)`/`AT TIME ZONE ...`.
+- **No raw IP, `ipHash`, or visitor fingerprint is ever returned.**
+  Analytics responses are aggregate objects (`ClickSummary`/
+  `ClickTimeseriesPoint`/`ClickBreakdownRow`) with no per-click identifying
+  field. Covered by `apps/api/test/analytics.test.ts` ("privacy"), which
+  asserts every endpoint's full response body never contains `ipHash` or
+  anything matching `/fingerprint/i`.
+- **No arbitrary HTTP requests to client-controlled URLs.**
+  `GeoLocationProvider.lookup(ip)` (`packages/shared/src/geo-location.ts`)
+  takes the server's own observed request IP, never a client-supplied URL
+  or hostname — the default `NullGeoLocationProvider` makes no network
+  call at all, and the interface gives no client-influenced input to a
+  future implementation that could turn it into an SSRF vector.
+- **Enrichment failures cannot break the tracker's redirect path.**
+  `UserAgentParser.parse` and `GeoLocationProvider.lookup` are both
+  wrapped in try/catch in `apps/tracker/src/modules/tracker/tracker.service.ts`
+  and degrade to "unknown" on any failure — a broken or slow geo provider
+  can degrade analytics data quality, but can never prevent a `Click` from
+  being written or a redirect from being issued. See
+  `docs/architecture/click-analytics.md#data-enrichment-strategy-keeping-the-redirect-hot-path-safe`.
 
 ## Secrets and logging
 
