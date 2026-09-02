@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { loadEnv } from "@adstrackio/config";
 import { buildApp } from "../src/app.js";
 import { SESSION_COOKIE_NAME } from "@adstrackio/auth";
@@ -80,6 +81,40 @@ export async function verifyAndActivateDomain(domainId: string): Promise<void> {
   await prisma.trackingDomain.update({
     where: { id: domainId },
     data: { verificationStatus: "VERIFIED", verifiedAt: new Date(), isActive: true },
+  });
+}
+
+/**
+ * Test-only shortcut to a Click row (Phase 7: Conversion Tracking).
+ * Clicks are only ever written by apps/tracker in production (Phase 3) —
+ * there is no apps/api route that creates one — so conversion tests that
+ * need an existing click to attribute against must insert it directly,
+ * the same way domains-lifecycle.test.ts manipulates verification state
+ * directly rather than going through real DNS.
+ *
+ * The id is explicitly generated as a UUID via randomUUID() — matching
+ * apps/tracker/src/modules/tracker/click-id.ts's generateClickId(),
+ * which every real Click row's id actually is — rather than leaving it to
+ * Prisma's schema-level default(cuid()), which is only ever the fallback
+ * for a write path that doesn't set it explicitly and would silently
+ * produce an id in the wrong format for
+ * packages/validation/src/conversions.ts's clickIdSchema (.uuid()) to
+ * accept.
+ */
+export async function createTestClick(
+  organizationId: string,
+  campaignId: string,
+  trackingLinkId: string,
+  overrides: { botClassification?: "HUMAN" | "BOT" | "SUSPICIOUS" | "UNKNOWN" } = {},
+): Promise<{ id: string }> {
+  return prisma.click.create({
+    data: {
+      id: randomUUID(),
+      organizationId,
+      campaignId,
+      trackingLinkId,
+      botClassification: overrides.botClassification ?? "HUMAN",
+    },
   });
 }
 
