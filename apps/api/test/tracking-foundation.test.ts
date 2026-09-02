@@ -105,6 +105,28 @@ describe("destination foundation", () => {
 });
 
 describe("campaign and tracking link foundation", () => {
+  it("normalizes a valid safePageUrl and rejects a dangerous scheme", async () => {
+    const { cookie, organizationId } = await setupOrg();
+
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/v1/organizations/${organizationId}/campaigns`,
+      headers: { cookie },
+      payload: { name: "Safe Page Campaign", safePageUrl: "https://Safe.example.com" },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().campaign.safePageUrl).toBe("https://safe.example.com/");
+
+    const rejected = await app.inject({
+      method: "POST",
+      url: `/api/v1/organizations/${organizationId}/campaigns`,
+      headers: { cookie },
+      payload: { name: "Malicious Safe Page", safePageUrl: "javascript:alert(1)" },
+    });
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json().error.code).toBe("VALIDATION_ERROR");
+  });
+
   it("supports the full chain: domain -> destination -> campaign -> tracking link", async () => {
     const { cookie, organizationId } = await setupOrg();
 

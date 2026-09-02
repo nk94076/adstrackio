@@ -1,7 +1,22 @@
 import type { PrismaClient, Prisma } from "@adstrackio/database";
-import { ApiError } from "@adstrackio/shared";
+import { ApiError, InvalidDestinationUrlError, normalizeDestinationUrl } from "@adstrackio/shared";
 import type { CreateCampaignInput, UpdateCampaignInput } from "@adstrackio/validation";
 import { writeAuditLog } from "../audit-logs/audit-log.service.js";
+
+// safePageUrl is a server-configured, admin-entered URL (not the
+// request-supplied transparent redirection_url the tracker follows for
+// real traffic), so the same admin-configured-URL validator used for
+// Destination applies here.
+function normalizeSafePageUrlOrThrow(url: string): string {
+  try {
+    return normalizeDestinationUrl(url);
+  } catch (error) {
+    if (error instanceof InvalidDestinationUrlError) {
+      throw ApiError.validation(error.message);
+    }
+    throw error;
+  }
+}
 
 async function assertBelongsToOrg(
   prisma: PrismaClient,
@@ -34,6 +49,7 @@ export async function createCampaign(
   input: CreateCampaignInput,
 ) {
   await assertBelongsToOrg(prisma, organizationId, input.trackingDomainId, input.destinationId);
+  const safePageUrl = input.safePageUrl ? normalizeSafePageUrlOrThrow(input.safePageUrl) : undefined;
 
   return prisma.$transaction(async (tx) => {
     const campaign = await tx.campaign.create({
@@ -43,6 +59,7 @@ export async function createCampaign(
         status: input.status,
         trackingDomainId: input.trackingDomainId,
         destinationId: input.destinationId,
+        safePageUrl,
         budgetAmount: input.budgetAmount,
         budgetCurrency: input.budgetCurrency,
         startDate: input.startDate,
@@ -91,6 +108,10 @@ export async function updateCampaign(
 ) {
   await getCampaign(prisma, organizationId, campaignId);
   await assertBelongsToOrg(prisma, organizationId, input.trackingDomainId, input.destinationId);
+  const safePageUrl =
+    input.safePageUrl === null || input.safePageUrl === undefined
+      ? input.safePageUrl
+      : normalizeSafePageUrlOrThrow(input.safePageUrl);
 
   return prisma.$transaction(async (tx) => {
     const campaign = await tx.campaign.update({
@@ -100,6 +121,7 @@ export async function updateCampaign(
         status: input.status,
         trackingDomainId: input.trackingDomainId,
         destinationId: input.destinationId,
+        safePageUrl,
         budgetAmount: input.budgetAmount,
         budgetCurrency: input.budgetCurrency,
         startDate: input.startDate,
