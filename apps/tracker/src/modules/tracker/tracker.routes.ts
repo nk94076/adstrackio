@@ -1,15 +1,18 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   ApiError,
   TrackingResolutionError,
   TransparentRedirectValidationError,
   hashIp,
+  resolveBotRoutingAction,
   validateTransparentRedirectUrl,
   type BotDetectionEngine,
+  type BotDetectionHeaderSignals,
   type GeoLocationProvider,
   type TrackingResolver,
   type UserAgentParser,
 } from "@adstrackio/shared";
+import { classifyWithSafeFallback } from "../bot-detection/classify-with-fallback.js";
 import { generateClickId } from "./click-id.js";
 import { recordClick } from "./tracker.service.js";
 
@@ -21,13 +24,61 @@ export interface TrackerRouteOptions {
   ipHashSalt: string;
 }
 
-/** Strips a port suffix from the Host header (e.g. "track.example.com:8443"
+/**
+ * Strips a port suffix from the Host header (e.g. "track.example.com:8443"
  * in a non-standard-port deployment) and lowercases it — a registered
  * TrackingDomain hostname never itself contains a port (Phase 2 rejects
  * that at creation), so this is normalizing the *request*, not the stored
- * value, to the same shape. */
-function normalizeRequestHostname(hostname: string): string {
-  return hostname.split(":")[0]!.toLowerCase();
+ * value, to the same shape.
+ *
+ * A bracketed IPv6 literal (RFC 3986/7230: "[::1]" or "[::1]:8443") has to
+ * be handled specially — naively splitting on the first ":" would cut a
+ * bare IPv6 address into garbage (e.g. "[::1]" -> "["). This still can't
+ * change which domain a request resolves to: `normalizeTrackingHostname`
+ * (packages/shared/src/hostname.ts) rejects IP literals outright at
+ * TrackingDomain creation, so no registered domain is ever an IP address
+ * and an IPv6 Host header can never match one either way — this is
+ * correctness/hygiene (a sane, predictable lookup key and sane logs), not
+ * a fix for a reachable routing bug.
+ */
+export function normalizeRequestHostname(hostname: string): string {
+  const trimmed = hostname.trim();
+
+  if (trimmed.startsWith("[")) {
+    const closingBracket = trimmed.indexOf("]");
+    if (closingBracket !== -1) {
+      // Keep "[...]" intact; only a trailing ":<port>" after the bracket
+      // (if any) is stripped.
+      return trimmed.slice(0, closingBracket + 1).toLowerCase();
+    }
+    // Malformed (opening bracket, no closing one) — fall through to the
+    // plain-hostname path below rather than throwing; it still can't
+    // match a real TrackingDomain, so this safely 404s downstream.
+  }
+
+  return trimmed.split(":")[0]!.toLowerCase();
+}
+
+/** Fastify/Node header values are `string | string[] | undefined`; these
+ * headers are never legitimately repeated, so the first value (if any) is
+ * used and anything else normalizes to `undefined` — never an array or
+ * empty string treated as "present." */
+function headerString(value: string | string[] | undefined): string | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  return raw && raw.trim() ? raw : undefined;
+}
+
+/** Extracts only the small, explicit set of headers the detection engine
+ * is allowed to see (packages/shared/src/bot-detection.ts) — never the
+ * full raw header set. */
+function extractDetectionHeaderSignals(request: FastifyRequest): BotDetectionHeaderSignals {
+  return {
+    accept: headerString(request.headers.accept),
+    acceptLanguage: headerString(request.headers["accept-language"]),
+    secFetchMode: headerString(request.headers["sec-fetch-mode"]),
+    secFetchSite: headerString(request.headers["sec-fetch-site"]),
+    secFetchDest: headerString(request.headers["sec-fetch-dest"]),
+  };
 }
 
 function mapResolutionError(error: TrackingResolutionError): ApiError {
@@ -97,14 +148,31 @@ export async function registerTrackerRoutes(
     const ipHash = hashIp(request.ip, options.ipHashSalt);
 
     // Bot classification is entirely server-computed from server-observed
-    // request data (User-Agent header via the injected BotDetectionEngine)
-    // — there is no request field that can assert its own bot/human
-    // status.
-    const classification = await options.botDetectionEngine.classify({
+    // request data (User-Agent + a small explicit set of other headers,
+    // via the injected BotDetectionEngine) — there is no request field
+    // that can assert its own bot/human status, override the score, or
+    // supply its own reason codes. classifyWithSafeFallback guarantees a
+    // classification is always produced, even if the engine throws,
+    // rejects, or hangs (see its doc comment) — detection failure must
+    // never crash or stall the redirect.
+    const classification = await classifyWithSafeFallback(options.botDetectionEngine, {
       clickId,
       userAgent,
       ipHash,
+      headers: extractDetectionHeaderSignals(request),
     });
+
+    // The routing action is resolved purely from the classification and
+    // the campaign's own configured policy (packages/shared's
+    // resolveBotRoutingAction) — never from any request-supplied value.
+    // BOT always maps to SAFE_PAGE and HUMAN always maps to TARGET;
+    // SUSPICIOUS/UNKNOWN follow whatever policy the campaign has
+    // configured (TARGET by default — see Campaign.suspiciousTrafficPolicy
+    // / unknownTrafficPolicy).
+    const routingAction = resolveBotRoutingAction(
+      classification.classification,
+      resolution.botTrafficPolicy,
+    );
 
     request.log.info(
       {
@@ -112,6 +180,7 @@ export async function registerTrackerRoutes(
         trackingLinkId: resolution.trackingLinkId,
         classification: classification.classification,
         reasonCodes: classification.reasonCodes,
+        routingAction,
       },
       "bot classification",
     );
@@ -135,17 +204,28 @@ export async function registerTrackerRoutes(
       },
     );
 
-    if (classification.classification === "BOT") {
-      if (!resolution.safePageUrl) {
-        request.log.info({ clickId, routedTo: "controlled-404" }, "redirect decision");
+    switch (routingAction) {
+      case "SAFE_PAGE": {
+        if (!resolution.safePageUrl) {
+          request.log.info({ clickId, routedTo: "controlled-404" }, "redirect decision");
+          throw ApiError.notFound("Not found");
+        }
+        request.log.info({ clickId, routedTo: "safe-page" }, "redirect decision");
+        reply.redirect(resolution.safePageUrl, 302);
+        return;
+      }
+      case "BLOCK": {
+        // Same controlled, no-hidden-destination response as "SAFE_PAGE
+        // configured but unset" — BLOCK never guesses a destination and
+        // never falls back to the transparent one.
+        request.log.info({ clickId, routedTo: "blocked" }, "redirect decision");
         throw ApiError.notFound("Not found");
       }
-      request.log.info({ clickId, routedTo: "safe-page" }, "redirect decision");
-      reply.redirect(resolution.safePageUrl, 302);
-      return;
+      case "TARGET": {
+        request.log.info({ clickId, routedTo: "transparent-destination" }, "redirect decision");
+        reply.redirect(redirectTarget, 302);
+        return;
+      }
     }
-
-    request.log.info({ clickId, routedTo: "transparent-destination" }, "redirect decision");
-    reply.redirect(redirectTarget, 302);
   });
 }

@@ -5,7 +5,7 @@ import type {
   TrackingResolutionResult,
   TrackingResolver,
 } from "@adstrackio/shared";
-import { TrackingResolutionError } from "@adstrackio/shared";
+import { DEFAULT_BOT_TRAFFIC_POLICY, TrackingResolutionError } from "@adstrackio/shared";
 import { buildTrackerApp } from "./app.js";
 
 /**
@@ -46,6 +46,7 @@ function fakeHumanResolver(overrides: Partial<TrackingResolutionResult> = {}) {
     campaignId: "campaign_1",
     organizationId: "org_1",
     safePageUrl: null,
+    botTrafficPolicy: DEFAULT_BOT_TRAFFIC_POLICY,
     ...overrides,
   });
 }
@@ -107,6 +108,7 @@ describe("tracker service boundary", () => {
             campaignId: "x",
             organizationId: "x",
             safePageUrl: null,
+            botTrafficPolicy: DEFAULT_BOT_TRAFFIC_POLICY,
           });
         },
       },

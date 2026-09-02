@@ -57,12 +57,24 @@ export interface Destination {
 
 export type CampaignStatus = "DRAFT" | "ACTIVE" | "PAUSED" | "ARCHIVED";
 
+export type BotTrafficPolicyAction = "SAFE_PAGE" | "TARGET" | "BLOCK";
+
 export interface Campaign {
   id: string;
   name: string;
   status: CampaignStatus;
   trackingDomainId: string | null;
   destinationId: string | null;
+  /** Server-configured destination for BOT-classified traffic (Phase 3/5)
+   * — never settable by request query parameters. Null means no Safe Page
+   * is configured, in which case the tracker returns a controlled 404 for
+   * BOT/BLOCKed traffic instead of guessing a destination. */
+  safePageUrl: string | null;
+  /** Routing policy for SUSPICIOUS/UNKNOWN-classified traffic (Phase 5) —
+   * BOT/HUMAN are not configurable. See
+   * docs/architecture/bot-detection.md. */
+  suspiciousTrafficPolicy: BotTrafficPolicyAction;
+  unknownTrafficPolicy: BotTrafficPolicyAction;
   createdAt: string;
 }
 

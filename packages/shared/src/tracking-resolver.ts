@@ -17,6 +17,8 @@
  * destination selection. It intentionally does NOT return a URL to
  * redirect to.
  */
+import type { BotTrafficPolicy } from "./bot-traffic-policy.js";
+
 export interface TrackingResolutionRequest {
   hostname: string;
   slug: string;
@@ -29,6 +31,10 @@ export interface TrackingResolutionResult {
   /** Server-configured Safe Page for bot/automated traffic on this
    * campaign, or null if none is configured (see Campaign.safePageUrl). */
   safePageUrl: string | null;
+  /** Campaign-configured routing policy for SUSPICIOUS/UNKNOWN traffic
+   * (Phase 5: Bot Detection Integration) — see
+   * packages/shared/src/bot-traffic-policy.ts. */
+  botTrafficPolicy: BotTrafficPolicy;
 }
 
 /** Why resolution failed — lets callers map to the right HTTP response

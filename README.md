@@ -3,17 +3,23 @@
 AdstrackIO is a performance marketing / attribution / click-tracking
 platform, built toward Google Transparent Click Tracker certification.
 
-**Current milestone: Phase 4 — Click Analytics.** Phase 1 established the
-monorepo, core data model, authentication, organizations/roles, and the
-API/dashboard foundation. Phase 2 (Domain Manager) added real
-DNS-verified tracking domains. Phase 3 added the real click-redirect
-endpoint (`apps/tracker`). Phase 4 adds real User-Agent/geo enrichment on
-`Click` rows and a read-only, organization-scoped click analytics API +
-dashboard on top of Phase 3's data — see
-`docs/architecture/click-analytics.md`. See
-`docs/architecture/overview.md` for what's implemented vs. deliberately
-deferred, and `docs/compliance/google-transparent-tracker.md` — **no
-certification has been obtained or claimed.**
+**Current milestone: Phase 5 — Bot Detection Integration.** Phase 1
+established the monorepo, core data model, authentication,
+organizations/roles, and the API/dashboard foundation. Phase 2 (Domain
+Manager) added real DNS-verified tracking domains. Phase 3 added the real
+click-redirect endpoint (`apps/tracker`). Phase 4 added real
+User-Agent/geo enrichment on `Click` rows and a read-only,
+organization-scoped click analytics API + dashboard — see
+`docs/architecture/click-analytics.md`. Phase 5 wires the tracker's bot
+classification into its actual routing decision — `SUSPICIOUS`/`UNKNOWN`
+verdicts, previously routed identically to `HUMAN` with no defined
+behavior, now follow an explicit, campaign-configurable policy — and
+upgrades the detection engine to multi-signal scoring while keeping it
+explicitly heuristic, not production-grade or ML-based; see
+`docs/architecture/bot-detection.md`. See `docs/architecture/overview.md`
+for what's implemented vs. deliberately deferred, and
+`docs/compliance/google-transparent-tracker.md` — **no certification has
+been obtained or claimed.**
 
 ## Stack
 
@@ -198,9 +204,27 @@ abstraction, privacy model, and current limitations). This phase does not
 change Phase 3's redirect/bot-routing behavior, and does not add or claim
 Google Transparent Click Tracker certification.
 
-Phase 5 onward (Bot Detection Integration, Campaign Manager, Conversion
-Tracking, Rules & Routing Engine, Affiliate/Partner System, Attribution &
-Advanced Reporting, API + Integrations, Google Certification Preparation &
-Submission) build on this foundation. See `docs/architecture/overview.md`
-for the boundaries set up specifically so those phases don't require a
-rewrite.
+**Phase 5 (Bot Detection Integration) is implemented**: the tracker's
+routing decision now reads all four `BotClassification` values, not just
+`BOT` — `SUSPICIOUS`/`UNKNOWN` verdicts, which previously fell through to
+the transparent destination with no defined behavior (identical to
+`HUMAN`), now follow an explicit, campaign-configurable policy
+(`Campaign.suspiciousTrafficPolicy`/`unknownTrafficPolicy`: `SAFE_PAGE`,
+`TARGET`, or `BLOCK`; defaulting to `TARGET`, so no existing campaign's
+behavior changes on deploy). `HeuristicBotDetectionEngine` was upgraded
+from a single User-Agent-substring check to multi-signal, weighted
+scoring (known bot/crawler/HTTP-client/headless-runtime User-Agents, plus
+an HTTP-header-consistency check for UAs claiming to be a mainstream
+browser) — still an explicitly heuristic implementation, not
+production-grade or ML-based detection, and this repository makes no
+claim otherwise. Detection-engine failure or a hypothetical hang degrades
+safely to `UNKNOWN` (bounded by an internal timeout) rather than crashing
+or stalling the redirect. See `docs/architecture/bot-detection.md` for
+the full design (signals, scoring, routing policy, Safe Page security,
+failure handling, privacy, performance, and current limitations).
+
+Phase 6 onward (Campaign Manager, Conversion Tracking, Rules & Routing
+Engine, Affiliate/Partner System, Attribution & Advanced Reporting, API +
+Integrations, Google Certification Preparation & Submission) build on
+this foundation. See `docs/architecture/overview.md` for the boundaries
+set up specifically so those phases don't require a rewrite.

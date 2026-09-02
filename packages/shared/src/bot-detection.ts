@@ -1,17 +1,59 @@
 /**
- * Plug-in boundary for the product's existing/planned bot-detection engine
- * (Phase 5). AdstrackIO does not implement its own bot classification logic
- * here — this interface exists so a BotEvent can be written by whichever
- * engine is wired in later without changing the Click/BotEvent schema or
- * the API surface that consumes it.
+ * Plug-in boundary for the product's bot/automated-traffic detection
+ * engine. This interface is the single source of truth for classification
+ * — apps/tracker must never compute a second, independent verdict outside
+ * whatever engine is wired in here (see
+ * apps/tracker/src/modules/bot-detection/heuristic-bot-detection-engine.ts
+ * for the current, explicitly-provisional implementation, and
+ * docs/architecture/bot-detection.md for the full architecture).
  */
 export type BotClassification = "UNKNOWN" | "HUMAN" | "SUSPICIOUS" | "BOT";
 
-export interface BotClassificationInput {
+/**
+ * Safe, minimal subset of request headers relevant to detection — never
+ * the full raw header set. Each is optional because the underlying header
+ * may genuinely be absent from the request; absence itself can be a
+ * detection signal (see the heuristic engine), so `undefined` here must
+ * always mean "this header was not present," not "not collected."
+ */
+export interface BotDetectionHeaderSignals {
+  accept?: string;
+  acceptLanguage?: string;
+  secFetchMode?: string;
+  secFetchSite?: string;
+  secFetchDest?: string;
+}
+
+export interface BotDetectionInput {
   clickId: string;
   userAgent?: string;
+  /** One-way hash of the request IP (see packages/shared/src/ip-hash.ts) —
+   * never the raw IP. Not used by the current heuristic engine; kept as a
+   * forward-compatible input for a future IP-reputation-style signal. */
   ipHash?: string;
+  headers?: BotDetectionHeaderSignals;
   requestMetadata?: Record<string, unknown>;
+  /**
+   * Cancellation signal for this classification call. The caller (see
+   * `classifyWithSafeFallback` in
+   * apps/tracker/src/modules/bot-detection/classify-with-fallback.ts)
+   * aborts this signal when it gives up waiting on `classify()` — today,
+   * when its internal timeout fires.
+   *
+   * A synchronous/local engine (the current `HeuristicBotDetectionEngine`)
+   * has nothing to cancel and can safely ignore this field entirely.
+   *
+   * Any FUTURE engine that performs real asynchronous work — a network
+   * call to an external bot-intelligence provider, a worker thread, a
+   * queued job — MUST observe this signal and actually cancel/abort that
+   * underlying work when it fires (e.g. pass it to `fetch`, or otherwise
+   * tear down the in-flight operation). Timeout in this system is not
+   * merely "the caller stopped waiting for a value" — it is a request to
+   * stop the operation itself, so a slow or hung engine cannot leave
+   * connections, sockets, or other resources running under sustained
+   * traffic once the caller has already moved on and served the redirect.
+   */
+  signal?: AbortSignal;
 }
 
 export interface BotClassificationResult {
@@ -22,5 +64,5 @@ export interface BotClassificationResult {
 }
 
 export interface BotDetectionEngine {
-  classify(input: BotClassificationInput): Promise<BotClassificationResult>;
+  classify(input: BotDetectionInput): Promise<BotClassificationResult>;
 }

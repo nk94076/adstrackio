@@ -19,6 +19,22 @@ const HUMAN_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
 const BOT_UA = "Googlebot/2.1 (+http://www.google.com/bot.html)";
 
+// Headers a real Chrome browser sends by default on a top-level
+// navigation. The Phase 5 detection engine treats a browser-claiming UA
+// with none of these as a (soft) automation signal, so `hit()` includes
+// them by default to model genuine human traffic — matching what every
+// browser actually sends, not a synthetic bare-minimum request no real
+// visitor ever makes. Tests that specifically want to simulate a
+// script/bot pass their own headers, which override these via the spread
+// below.
+const REALISTIC_BROWSER_HEADERS: Record<string, string> = {
+  accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+  "accept-language": "en-US,en;q=0.9",
+  "sec-fetch-mode": "navigate",
+  "sec-fetch-site": "none",
+  "sec-fetch-dest": "document",
+};
+
 let app: FastifyInstance;
 
 beforeEach(async () => {
@@ -34,7 +50,7 @@ async function hit(hostname: string, slug: string, query = "", headers: Record<s
   return app.inject({
     method: "GET",
     url: `/${slug}${query}`,
-    headers: { host: hostname, "user-agent": HUMAN_UA, ...headers },
+    headers: { host: hostname, "user-agent": HUMAN_UA, ...REALISTIC_BROWSER_HEADERS, ...headers },
   });
 }
 
@@ -476,5 +492,370 @@ describe("enrichment failure isolation (Phase 4)", () => {
     } finally {
       await neverResolvingGeoApp.close();
     }
+  });
+});
+
+/** A BotDetectionEngine fake that always returns the given classification
+ * — decouples "does routing obey the configured policy" (this file) from
+ * "does the heuristic engine compute the right verdict" (covered
+ * separately in heuristic-bot-detection-engine.test.ts). */
+function fixedClassificationEngine(
+  classification: "HUMAN" | "BOT" | "SUSPICIOUS" | "UNKNOWN",
+  reasonCodes: string[] = [],
+) {
+  return {
+    classify: () =>
+      Promise.resolve({ classification, score: 0.5, reasonCodes, detectionSource: "fixed-fake" }),
+  };
+}
+
+describe("SUSPICIOUS/UNKNOWN routing policy (Phase 5)", () => {
+  it.each(["SUSPICIOUS", "UNKNOWN"] as const)(
+    "%s with the default (TARGET) policy routes to the transparent destination",
+    async (classification) => {
+      const policyApp = await buildTrackerApp({
+        env: getEnv(),
+        logger: false,
+        botDetectionEngine: fixedClassificationEngine(classification),
+      });
+      try {
+        const fixture = await createTrackerFixture({ safePageUrl: "https://safe.example.com/" });
+        const target = "https://example.com/offer";
+        const response = await policyApp.inject({
+          method: "GET",
+          url: `/${fixture.slug}?redirection_url=${encodeURIComponent(target)}`,
+          headers: { host: fixture.hostname, "user-agent": HUMAN_UA },
+        });
+        expect(response.statusCode).toBe(302);
+        expect(response.headers.location).toBe(target);
+      } finally {
+        await policyApp.close();
+      }
+    },
+  );
+
+  it.each(["SUSPICIOUS", "UNKNOWN"] as const)(
+    "%s with a SAFE_PAGE policy routes to the campaign's Safe Page",
+    async (classification) => {
+      const policyOverrides =
+        classification === "SUSPICIOUS"
+          ? { suspiciousTrafficPolicy: "SAFE_PAGE" as const }
+          : { unknownTrafficPolicy: "SAFE_PAGE" as const };
+      const policyApp = await buildTrackerApp({
+        env: getEnv(),
+        logger: false,
+        botDetectionEngine: fixedClassificationEngine(classification),
+      });
+      try {
+        const fixture = await createTrackerFixture({
+          safePageUrl: "https://safe.example.com/",
+          ...policyOverrides,
+        });
+        const target = "https://example.com/offer";
+        const response = await policyApp.inject({
+          method: "GET",
+          url: `/${fixture.slug}?redirection_url=${encodeURIComponent(target)}`,
+          headers: { host: fixture.hostname, "user-agent": HUMAN_UA },
+        });
+        expect(response.statusCode).toBe(302);
+        expect(response.headers.location).toBe("https://safe.example.com/");
+      } finally {
+        await policyApp.close();
+      }
+    },
+  );
+
+  it.each(["SUSPICIOUS", "UNKNOWN"] as const)(
+    "%s with a BLOCK policy returns a controlled 404, never the transparent destination or Safe Page",
+    async (classification) => {
+      const policyOverrides =
+        classification === "SUSPICIOUS"
+          ? { suspiciousTrafficPolicy: "BLOCK" as const }
+          : { unknownTrafficPolicy: "BLOCK" as const };
+      const policyApp = await buildTrackerApp({
+        env: getEnv(),
+        logger: false,
+        botDetectionEngine: fixedClassificationEngine(classification),
+      });
+      try {
+        const fixture = await createTrackerFixture({
+          safePageUrl: "https://safe.example.com/",
+          ...policyOverrides,
+        });
+        const response = await policyApp.inject({
+          method: "GET",
+          url: `/${fixture.slug}?redirection_url=${encodeURIComponent("https://example.com/offer")}`,
+          headers: { host: fixture.hostname, "user-agent": HUMAN_UA },
+        });
+        expect(response.statusCode).toBe(404);
+        expect(response.headers.location).toBeUndefined();
+      } finally {
+        await policyApp.close();
+      }
+    },
+  );
+
+  it("BLOCK policy returns a controlled 404 even when a Safe Page IS configured (never falls back to it)", async () => {
+    const policyApp = await buildTrackerApp({
+      env: getEnv(),
+      logger: false,
+      botDetectionEngine: fixedClassificationEngine("SUSPICIOUS"),
+    });
+    try {
+      const fixture = await createTrackerFixture({
+        safePageUrl: "https://safe.example.com/",
+        suspiciousTrafficPolicy: "BLOCK",
+      });
+      const response = await policyApp.inject({
+        method: "GET",
+        url: `/${fixture.slug}?redirection_url=${encodeURIComponent("https://example.com/offer")}`,
+        headers: { host: fixture.hostname, "user-agent": HUMAN_UA },
+      });
+      expect(response.statusCode).toBe(404);
+    } finally {
+      await policyApp.close();
+    }
+  });
+});
+
+describe("Safe Page cannot be overridden by client input (Phase 5)", () => {
+  it("a BOT request's attacker-controlled redirection_url never leaks into the Safe Page redirect", async () => {
+    const fixture = await createTrackerFixture({ safePageUrl: "https://safe.example.com/" });
+    const attackerUrl = "https://attacker.example/phish";
+
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent(attackerUrl)}`,
+      { "user-agent": BOT_UA },
+    );
+
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe("https://safe.example.com/");
+    expect(response.headers.location).not.toBe(attackerUrl);
+  });
+
+  it.each(["SUSPICIOUS", "UNKNOWN"] as const)(
+    "a %s request with a SAFE_PAGE policy also ignores an attacker-controlled redirection_url",
+    async (classification) => {
+      const policyOverrides =
+        classification === "SUSPICIOUS"
+          ? { suspiciousTrafficPolicy: "SAFE_PAGE" as const }
+          : { unknownTrafficPolicy: "SAFE_PAGE" as const };
+      const policyApp = await buildTrackerApp({
+        env: getEnv(),
+        logger: false,
+        botDetectionEngine: fixedClassificationEngine(classification),
+      });
+      try {
+        const fixture = await createTrackerFixture({
+          safePageUrl: "https://safe.example.com/",
+          ...policyOverrides,
+        });
+        const attackerUrl = "https://attacker.example/phish";
+        const response = await policyApp.inject({
+          method: "GET",
+          url: `/${fixture.slug}?redirection_url=${encodeURIComponent(attackerUrl)}`,
+          headers: { host: fixture.hostname, "user-agent": HUMAN_UA },
+        });
+        expect(response.statusCode).toBe(302);
+        expect(response.headers.location).toBe("https://safe.example.com/");
+      } finally {
+        await policyApp.close();
+      }
+    },
+  );
+
+  it("no combination of isBot/bot/classification/score query parameters can change the Safe Page destination", async () => {
+    const fixture = await createTrackerFixture({ safePageUrl: "https://safe.example.com/" });
+    const attackerSafePage = "https://attacker.example/fake-safe-page";
+
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent("https://example.com/offer")}` +
+        `&isBot=false&bot=false&classification=HUMAN&score=0` +
+        `&safePageUrl=${encodeURIComponent(attackerSafePage)}`,
+      { "user-agent": BOT_UA },
+    );
+
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe("https://safe.example.com/");
+  });
+});
+
+describe("detection failure isolation and safe fallback (Phase 5)", () => {
+  it("still redirects (per the UNKNOWN policy default) when the BotDetectionEngine throws synchronously", async () => {
+    const throwingEngineApp = await buildTrackerApp({
+      env: getEnv(),
+      logger: false,
+      botDetectionEngine: {
+        classify: () => {
+          throw new Error("boom: detection engine exploded");
+        },
+      },
+    });
+    try {
+      const fixture = await createTrackerFixture();
+      const target = "https://example.com/offer";
+      const response = await throwingEngineApp.inject({
+        method: "GET",
+        url: `/${fixture.slug}?redirection_url=${encodeURIComponent(target)}`,
+        headers: { host: fixture.hostname, "user-agent": HUMAN_UA },
+      });
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe(target);
+
+      const click = await prisma.click.findFirstOrThrow({
+        where: { trackingLinkId: fixture.trackingLinkId },
+      });
+      expect(click.botClassification).toBe("UNKNOWN");
+
+      const botEvent = await prisma.botEvent.findFirstOrThrow({ where: { clickId: click.id } });
+      expect(botEvent.reasonCodes).toContain("detection_engine_failure");
+      expect(botEvent.detectionSource).toBe("tracker-fallback");
+    } finally {
+      await throwingEngineApp.close();
+    }
+  });
+
+  it("still redirects when the BotDetectionEngine's promise rejects", async () => {
+    const rejectingEngineApp = await buildTrackerApp({
+      env: getEnv(),
+      logger: false,
+      botDetectionEngine: {
+        classify: () => Promise.reject(new Error("boom: detection engine rejected")),
+      },
+    });
+    try {
+      const fixture = await createTrackerFixture();
+      const target = "https://example.com/offer";
+      const response = await rejectingEngineApp.inject({
+        method: "GET",
+        url: `/${fixture.slug}?redirection_url=${encodeURIComponent(target)}`,
+        headers: { host: fixture.hostname, "user-agent": HUMAN_UA },
+      });
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe(target);
+    } finally {
+      await rejectingEngineApp.close();
+    }
+  });
+
+  it("still redirects, without hanging, when the BotDetectionEngine never resolves", async () => {
+    const hangingEngineApp = await buildTrackerApp({
+      env: getEnv(),
+      logger: false,
+      botDetectionEngine: {
+        classify: () =>
+          new Promise(() => {
+            /* deliberately never settles */
+          }),
+      },
+    });
+    try {
+      const fixture = await createTrackerFixture();
+      const target = "https://example.com/offer";
+      const response = await hangingEngineApp.inject({
+        method: "GET",
+        url: `/${fixture.slug}?redirection_url=${encodeURIComponent(target)}`,
+        headers: { host: fixture.hostname, "user-agent": HUMAN_UA },
+      });
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe(target);
+
+      const click = await prisma.click.findFirstOrThrow({
+        where: { trackingLinkId: fixture.trackingLinkId },
+      });
+      const botEvent = await prisma.botEvent.findFirstOrThrow({ where: { clickId: click.id } });
+      expect(botEvent.reasonCodes).toContain("detection_engine_timeout");
+    } finally {
+      await hangingEngineApp.close();
+    }
+  });
+});
+
+describe("Click/BotEvent persistence consistency for non-HUMAN/BOT classifications (Phase 5)", () => {
+  it("writes matching Click and BotEvent rows for a SUSPICIOUS verdict", async () => {
+    const policyApp = await buildTrackerApp({
+      env: getEnv(),
+      logger: false,
+      botDetectionEngine: fixedClassificationEngine("SUSPICIOUS", ["test_reason_a", "test_reason_b"]),
+    });
+    try {
+      const fixture = await createTrackerFixture();
+      const response = await policyApp.inject({
+        method: "GET",
+        url: `/${fixture.slug}?redirection_url=${encodeURIComponent("https://example.com/offer")}`,
+        headers: { host: fixture.hostname, "user-agent": HUMAN_UA },
+      });
+      expect(response.statusCode).toBe(302);
+
+      const click = await prisma.click.findFirstOrThrow({
+        where: { trackingLinkId: fixture.trackingLinkId },
+      });
+      expect(click.botClassification).toBe("SUSPICIOUS");
+      expect(click.botScore).toBe(0.5);
+
+      const botEvent = await prisma.botEvent.findFirstOrThrow({ where: { clickId: click.id } });
+      expect(botEvent.classification).toBe("SUSPICIOUS");
+      expect(botEvent.score).toBe(0.5);
+      expect(botEvent.reasonCodes).toEqual(["test_reason_a", "test_reason_b"]);
+      expect(botEvent.detectionSource).toBe("fixed-fake");
+    } finally {
+      await policyApp.close();
+    }
+  });
+});
+
+describe("malicious/conflicting headers and query parameters (Phase 5)", () => {
+  it("a known-bot User-Agent combined with a fully browser-consistent header set is still classified BOT", async () => {
+    const fixture = await createTrackerFixture({ safePageUrl: "https://safe.example.com/" });
+    // hit() already sends REALISTIC_BROWSER_HEADERS by default; overriding
+    // only the User-Agent to a known bot simulates a script that copied a
+    // real browser's full header set but kept (or forgot to spoof) its own
+    // automation UA.
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent("https://example.com/offer")}`,
+      { "user-agent": BOT_UA },
+    );
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe("https://safe.example.com/");
+  });
+
+  it("arbitrary client-supplied headers outside the allowed detection set have no effect on classification", async () => {
+    const fixture = await createTrackerFixture({ safePageUrl: "https://safe.example.com/" });
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent("https://example.com/offer")}`,
+      {
+        "user-agent": BOT_UA,
+        "x-bot-override": "false",
+        "x-forwarded-classification": "HUMAN",
+        "x-detection-score": "0",
+      },
+    );
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe("https://safe.example.com/");
+  });
+
+  it("conflicting sec-fetch header values (present but nonsensical) are still treated as headers being present", async () => {
+    const fixture = await createTrackerFixture();
+    const target = "https://example.com/offer";
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent(target)}`,
+      { "user-agent": HUMAN_UA, "sec-fetch-mode": "not-a-real-value" },
+    );
+    // Presence, not semantic validity, is what the heuristic checks — a
+    // genuine browser's own values are trusted the same way; asserting
+    // this stays HUMAN documents that the engine doesn't try to validate
+    // header contents beyond presence.
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe(target);
   });
 });

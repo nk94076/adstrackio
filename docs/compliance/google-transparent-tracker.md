@@ -98,22 +98,29 @@ opaque-destination pattern this design exists to avoid.
   depth, even though `apps/api`'s write path already guarantees it.
 - **Bot routing.** `HeuristicBotDetectionEngine`
   (`apps/tracker/src/modules/bot-detection/heuristic-bot-detection-engine.ts`)
-  is an explicitly provisional implementation of the pre-existing
-  `BotDetectionEngine` interface (`packages/shared/src/bot-detection.ts`)
-  — a small user-agent heuristic, not the "product's existing/planned
-  bot-detection capability" Phase 5 is meant to wire in. Classification is
-  computed entirely server-side from the request's own `User-Agent`
-  header; no request parameter can assert its own bot/human status.
-  Traffic classified `BOT` is sent to the campaign's server-configured
-  `safePageUrl` (`Campaign.safePageUrl`, Phase 3's minimal Safe Page
-  foundation) instead of the transparent destination; if none is
+  is the implementation of the pre-existing `BotDetectionEngine` interface
+  (`packages/shared/src/bot-detection.ts`) — a multi-signal but still
+  explicitly provisional heuristic (Phase 5: Bot Detection Integration),
+  not a production-grade or ML-based detector. Classification is computed
+  entirely server-side from the request's own `User-Agent` header and a
+  small, explicit whitelist of other headers; no request parameter can
+  assert its own bot/human status, override the score, or supply its own
+  reason codes. Traffic classified `BOT` is always sent to the campaign's
+  server-configured `safePageUrl` (`Campaign.safePageUrl`, Phase 3's Safe
+  Page foundation) instead of the transparent destination; if none is
   configured, the tracker returns a controlled `404` rather than guessing
   or falling back to a hidden destination. This routing decision is
   **internal** — it changes where the *response* goes, but it never
   changes or hides what `redirection_url` in the *request* said the
-  immediate next hop was. A `SUSPICIOUS` or `UNKNOWN` classification is
-  currently treated as servable (only a definitive `BOT` verdict diverts
-  traffic) — see `docs/architecture/security.md` for why.
+  immediate next hop was. `SUSPICIOUS` and `UNKNOWN` classifications
+  (Phase 5) now route through the campaign's own configured policy
+  (`Campaign.suspiciousTrafficPolicy`/`unknownTrafficPolicy`: `SAFE_PAGE`,
+  `TARGET`, or `BLOCK`; defaulting to `TARGET`, the implicit behavior
+  every campaign had before this field existed) instead of being
+  unconditionally treated as servable — see
+  `docs/architecture/bot-detection.md` for the full policy model. A
+  `BLOCK` verdict, like `SAFE_PAGE` with none configured, returns a
+  controlled `404` — never a hidden destination.
 - **Click logging.** Every resolved request writes a `Click` row (with a
   separately-generated, CSPRNG `crypto.randomUUID()` id — not appended to
   the outward redirect URL, kept purely internal) and a corresponding
@@ -170,11 +177,14 @@ opaque-destination pattern this design exists to avoid.
    `redirection_url` or to a Safe Page URL.
 
 7. **Bot routing must not hide the immediate next hop from the
-   Google-facing URL architecture.** The Safe Page mechanism changes
-   *where the response points*, never *what the request's own
-   `redirection_url` said* — a reviewer inspecting the request/response
-   pair can always see both the visible destination the request asked for
-   and, for non-bot traffic, that the tracker honored it.
+   Google-facing URL architecture.** The Safe Page mechanism (and, Phase
+   5, the `BLOCK` policy action) changes *where the response points*,
+   never *what the request's own `redirection_url` said* — a reviewer
+   inspecting the request/response pair can always see both the visible
+   destination the request asked for and, for `TARGET`-routed traffic
+   (always the case for `HUMAN`), that the tracker honored it. `BLOCK`
+   never substitutes a hidden destination either — it returns the same
+   controlled `404` as an unconfigured Safe Page, not a redirect anywhere.
 
 ## Known limitations (tracked, not hidden)
 
@@ -182,13 +192,11 @@ opaque-destination pattern this design exists to avoid.
   `docs/architecture/security.md` known limitations.
 - **No SSL/TLS certificate provisioning.** `TrackingDomain.sslStatus`
   remains `NOT_CONFIGURED`; not fabricated.
-- **`HeuristicBotDetectionEngine` is a placeholder**, not the real
-  bot-detection capability Phase 5 is expected to wire in through the same
-  `BotDetectionEngine` interface.
-- **No click/browser/OS/geo analytics enrichment.** `Click.browser`,
-  `Click.os`, and `Click.country`/`region`/`city` are left unset — there is
-  no user-agent-parsing or geo-lookup capability in this codebase, and
-  building one is Phase 4 (Click Analytics) work.
+- **`HeuristicBotDetectionEngine` is a multi-signal but still
+  explicitly-provisional heuristic** (Phase 5), not a production-grade or
+  ML-based bot-detection capability. A future non-heuristic engine can
+  still be dropped in through the same `BotDetectionEngine` interface —
+  see `docs/architecture/bot-detection.md`.
 - **Campaign status does not gate traffic.** Only `TrackingDomain`
   verification/activation and `TrackingLink.status` gate whether a request
   resolves; a `DRAFT`/`PAUSED`/`ARCHIVED` campaign's still-`ACTIVE`
@@ -197,9 +205,14 @@ opaque-destination pattern this design exists to avoid.
 
 ## Re-reading this document
 
-Whoever implements Phase 8 (Rules & Routing Engine), Phase 5 (Bot Detection
-Integration), or Phase 12 (Google Certification Preparation) should re-read
-this document before changing tracker behavior, and update it — not just
-the code — if any of these constraints turn out to be wrong, incomplete, or
-in tension with an actual Google requirement discovered during
-certification prep.
+Phase 5 (Bot Detection Integration) re-read this document before wiring
+`SUSPICIOUS`/`UNKNOWN` classifications into the routing decision (see
+requirement 7 and the "Bot routing" section above, both updated in that
+phase) and confirmed no core transparency requirement changed — only the
+previously-undefined routing behavior for two classifications was made
+explicit and campaign-configurable. Whoever implements Phase 8 (Rules &
+Routing Engine) or Phase 12 (Google Certification Preparation) should
+re-read this document before changing tracker behavior, and update it —
+not just the code — if any of these constraints turn out to be wrong,
+incomplete, or in tension with an actual Google requirement discovered
+during certification prep.

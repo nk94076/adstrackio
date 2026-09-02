@@ -4,7 +4,15 @@ import { useEffect, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import { apiFetch, ApiClientError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
-import type { Campaign, CampaignStatus, Destination, TrackingDomain } from "@/lib/types";
+import type {
+  BotTrafficPolicyAction,
+  Campaign,
+  CampaignStatus,
+  Destination,
+  TrackingDomain,
+} from "@/lib/types";
+
+const BOT_POLICY_OPTIONS: BotTrafficPolicyAction[] = ["TARGET", "SAFE_PAGE", "BLOCK"];
 
 const STATUS_STYLES: Record<CampaignStatus, string> = {
   DRAFT: "bg-slate-100 text-slate-600",
@@ -22,6 +30,10 @@ export default function CampaignsPage() {
   const [campaignName, setCampaignName] = useState("");
   const [trackingDomainId, setTrackingDomainId] = useState("");
   const [destinationId, setDestinationId] = useState("");
+  const [safePageUrl, setSafePageUrl] = useState("");
+  const [suspiciousTrafficPolicy, setSuspiciousTrafficPolicy] =
+    useState<BotTrafficPolicyAction>("TARGET");
+  const [unknownTrafficPolicy, setUnknownTrafficPolicy] = useState<BotTrafficPolicyAction>("TARGET");
   const [campaignError, setCampaignError] = useState<string | null>(null);
 
   const [destinationName, setDestinationName] = useState("");
@@ -75,11 +87,17 @@ export default function CampaignsPage() {
           name: campaignName,
           trackingDomainId: trackingDomainId || undefined,
           destinationId: destinationId || undefined,
+          safePageUrl: safePageUrl || undefined,
+          suspiciousTrafficPolicy,
+          unknownTrafficPolicy,
         }),
       });
       setCampaignName("");
       setTrackingDomainId("");
       setDestinationId("");
+      setSafePageUrl("");
+      setSuspiciousTrafficPolicy("TARGET");
+      setUnknownTrafficPolicy("TARGET");
       await loadAll(activeOrganizationId);
     } catch (err) {
       setCampaignError(err instanceof ApiClientError ? err.message : "Failed to create campaign");
@@ -137,6 +155,12 @@ export default function CampaignsPage() {
 
         <div className="card p-6">
           <h2 className="text-sm font-semibold text-slate-800">Create campaign</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Safe Page and bot-traffic policy control where the tracker (Phase 3/5) routes
+            automated/ambiguous traffic. BOT always goes to the Safe Page (or a controlled block
+            if none is set); HUMAN always goes to the real destination — only SUSPICIOUS and
+            UNKNOWN verdicts are configurable. See docs/architecture/bot-detection.md.
+          </p>
           <form onSubmit={handleCreateCampaign} className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
             <input
               className="input"
@@ -169,6 +193,46 @@ export default function CampaignsPage() {
                 </option>
               ))}
             </select>
+            <input
+              className="input sm:col-span-3"
+              placeholder="Safe Page URL (where BOT-classified traffic is sent, optional)"
+              value={safePageUrl}
+              onChange={(e) => setSafePageUrl(e.target.value)}
+            />
+            <div>
+              <label className="label" htmlFor="suspiciousTrafficPolicy">
+                SUSPICIOUS traffic policy
+              </label>
+              <select
+                id="suspiciousTrafficPolicy"
+                className="input"
+                value={suspiciousTrafficPolicy}
+                onChange={(e) => setSuspiciousTrafficPolicy(e.target.value as BotTrafficPolicyAction)}
+              >
+                {BOT_POLICY_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label" htmlFor="unknownTrafficPolicy">
+                UNKNOWN traffic policy
+              </label>
+              <select
+                id="unknownTrafficPolicy"
+                className="input"
+                value={unknownTrafficPolicy}
+                onChange={(e) => setUnknownTrafficPolicy(e.target.value as BotTrafficPolicyAction)}
+              >
+                {BOT_POLICY_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </div>
             <button type="submit" className="btn-primary sm:col-span-3" disabled={!activeOrganizationId}>
               Create campaign
             </button>
@@ -182,6 +246,8 @@ export default function CampaignsPage() {
               <tr>
                 <th className="px-4 py-2 font-medium">Name</th>
                 <th className="px-4 py-2 font-medium">Status</th>
+                <th className="px-4 py-2 font-medium">Safe Page</th>
+                <th className="px-4 py-2 font-medium">Bot policy (SUS / UNK)</th>
                 <th className="px-4 py-2 font-medium">Created</th>
               </tr>
             </thead>
@@ -195,13 +261,23 @@ export default function CampaignsPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-slate-500">
+                    {campaign.safePageUrl ? (
+                      <span className="truncate">{campaign.safePageUrl}</span>
+                    ) : (
+                      <span className="text-slate-400">Not configured</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs text-slate-600">
+                    {campaign.suspiciousTrafficPolicy} / {campaign.unknownTrafficPolicy}
+                  </td>
+                  <td className="px-4 py-3 text-slate-500">
                     {new Date(campaign.createdAt).toLocaleDateString()}
                   </td>
                 </tr>
               ))}
               {campaigns.length === 0 && (
                 <tr>
-                  <td className="px-4 py-6 text-center text-slate-500" colSpan={3}>
+                  <td className="px-4 py-6 text-center text-slate-500" colSpan={5}>
                     No campaigns yet.
                   </td>
                 </tr>
