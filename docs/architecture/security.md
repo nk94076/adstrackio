@@ -287,6 +287,71 @@ section covers its security-relevant properties specifically.
   hang; the only failure surface is the detection engine call that feeds
   it, which is independently guarded (above).
 
+## Campaign Manager (apps/api, Phase 6)
+
+Full design rationale is in `docs/architecture/campaign-manager.md`; this
+section covers its security-relevant properties specifically.
+
+- **Status can never be forced through the generic `PATCH`.**
+  `updateCampaignSchema`/`updateTrackingLinkSchema`
+  (`packages/validation/src/campaigns.ts`, `tracking-links.ts`) have no
+  `status` field at all — a `status` key in a `PATCH` body is silently
+  stripped by Zod's default (non-strict) object parsing, the same as any
+  other unrecognized field, and never reaches the database. The only way
+  to change status is the explicit `POST .../activate`, `.../pause`,
+  `.../archive` endpoints, each of which validates the transition against
+  the state machine in `packages/shared/src/campaign-lifecycle.ts` /
+  `tracking-link-lifecycle.ts` before writing anything — see
+  `apps/api/test/campaign-manager.test.ts` ("mass assignment / status
+  manipulation").
+- **Lifecycle transitions are enforced once, in the domain layer — not
+  duplicated per caller and not left to the dashboard.** Every path that
+  can change a `Campaign`/`TrackingLink` status (the three explicit
+  endpoints) routes through the same `assertValidCampaignStatusTransition`/
+  `assertValidTrackingLinkStatusTransition` call, so there is exactly one
+  place that decides "is this transition legal" — a future caller (a
+  script, an internal tool, a future bulk-action endpoint) cannot bypass
+  it by calling the service function directly.
+- **A campaign/tracking link can only reference a domain that can actually
+  serve traffic.** `assertTrackingDomainAssignable`
+  (`apps/api/src/modules/shared/org-scoped-refs.ts`) requires the
+  `TrackingDomain` to belong to the same organization (the existing IDOR
+  boundary, unchanged) **and** to be `VERIFIED` and active — Phase 1-5 only
+  checked organization ownership, so a campaign could previously be
+  configured to point at a domain that would guarantee a `domain_not_
+  verified`/`domain_inactive` failure at the tracker on first click. This
+  closes that gap at configuration time instead of deferring it to a
+  customer's first real click.
+- **A campaign that serves live traffic cannot have its tracking domain
+  swapped out from under it.** `updateCampaign`
+  (`apps/api/src/modules/campaigns/campaigns.service.ts`) rejects any
+  change to `trackingDomainId` while `status === "ACTIVE"` with a `409`;
+  the campaign must be paused first. `destinationId` and `safePageUrl` are
+  exempt from this restriction — neither is read by the tracker's actual
+  redirect decision (Phase 3's request-supplied `redirection_url`
+  architecture), so changing them cannot break an in-flight resolution the
+  way `trackingDomainId` can.
+- **No new active traffic infrastructure under a retired campaign.**
+  Creating a `TrackingLink`, or reactivating a `PAUSED` one, under a
+  `Campaign` whose `status` is `ARCHIVED` is rejected with a `409`
+  (`assertCampaignAcceptsNewOrReactivatedLinks`). Config-only changes
+  (e.g. updating a link's `destinationId`) are not gated by this — only
+  creation and (re)activation are.
+- **Tracking-link organization isolation extends to the campaign/link
+  relationship, not just the organization.** The nested routes
+  (`/campaigns/:campaignId/tracking-links/:trackingLinkId`) use
+  `getTrackingLinkForCampaign`, which requires the link to belong to
+  *that* campaign, not merely to *some* campaign in the organization — a
+  link that exists, in-org, under a different campaign 404s rather than
+  being returned or modified through the wrong campaign's URL. Covered by
+  `apps/api/test/campaign-manager.test.ts` ("wrong campaign/link
+  relationship").
+- **Lifecycle endpoints require `ADMIN`, one tier above the `MEMBER` role
+  that can create/edit configuration** — matching the precedent Phase 2
+  set for domain `activate`/`deactivate`. Starting, stopping, or
+  permanently retiring a campaign's live traffic is a bigger blast radius
+  than editing its configuration.
+
 ## Click Analytics (apps/api, Phase 4)
 
 Full design rationale is in `docs/architecture/click-analytics.md`; this
