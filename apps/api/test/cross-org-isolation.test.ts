@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { buildTestApp, registerAccount } from "./helpers.js";
+import { buildTestApp, registerAccount, verifyAndActivateDomain } from "./helpers.js";
 import { resetDatabase } from "./db-reset.js";
 
 /**
@@ -54,6 +54,10 @@ async function setupTwoOrgs() {
       payload: { name: "A Destination", url: "https://a-dest.example.com" },
     })
   ).json().destination;
+
+  // Phase 6: a campaign/tracking link can only reference a domain that has
+  // completed verification and is active.
+  await verifyAndActivateDomain(domainA.id);
 
   const campaignA = (
     await app.inject({

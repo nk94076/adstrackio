@@ -1,7 +1,16 @@
 import type { PrismaClient, Prisma } from "@adstrackio/database";
-import { ApiError, InvalidDestinationUrlError, normalizeDestinationUrl } from "@adstrackio/shared";
+import {
+  ApiError,
+  CREATABLE_CAMPAIGN_STATUSES,
+  InvalidCampaignStatusTransitionError,
+  InvalidDestinationUrlError,
+  assertValidCampaignStatusTransition,
+  normalizeDestinationUrl,
+  type CampaignStatus,
+} from "@adstrackio/shared";
 import type { CreateCampaignInput, UpdateCampaignInput } from "@adstrackio/validation";
 import { writeAuditLog } from "../audit-logs/audit-log.service.js";
+import { assertDestinationAssignable, assertTrackingDomainAssignable } from "../shared/org-scoped-refs.js";
 
 // safePageUrl is a server-configured, admin-entered URL (not the
 // request-supplied transparent redirection_url the tracker follows for
@@ -18,27 +27,17 @@ function normalizeSafePageUrlOrThrow(url: string): string {
   }
 }
 
-async function assertBelongsToOrg(
+async function assertReferencesValid(
   prisma: PrismaClient,
   organizationId: string,
   trackingDomainId?: string | null,
   destinationId?: string | null,
 ) {
   if (trackingDomainId) {
-    const domain = await prisma.trackingDomain.findFirst({
-      where: { id: trackingDomainId, organizationId },
-    });
-    if (!domain) {
-      throw ApiError.validation("trackingDomainId does not belong to this organization");
-    }
+    await assertTrackingDomainAssignable(prisma, organizationId, trackingDomainId);
   }
   if (destinationId) {
-    const destination = await prisma.destination.findFirst({
-      where: { id: destinationId, organizationId },
-    });
-    if (!destination) {
-      throw ApiError.validation("destinationId does not belong to this organization");
-    }
+    await assertDestinationAssignable(prisma, organizationId, destinationId);
   }
 }
 
@@ -48,7 +47,12 @@ export async function createCampaign(
   organizationId: string,
   input: CreateCampaignInput,
 ) {
-  await assertBelongsToOrg(prisma, organizationId, input.trackingDomainId, input.destinationId);
+  if (!CREATABLE_CAMPAIGN_STATUSES.includes(input.status as CampaignStatus)) {
+    throw ApiError.validation(
+      `A campaign cannot be created directly in ${input.status} status; create it as DRAFT or ACTIVE and use the lifecycle endpoints from there`,
+    );
+  }
+  await assertReferencesValid(prisma, organizationId, input.trackingDomainId, input.destinationId);
   const safePageUrl = input.safePageUrl ? normalizeSafePageUrlOrThrow(input.safePageUrl) : undefined;
 
   return prisma.$transaction(async (tx) => {
@@ -76,6 +80,7 @@ export async function createCampaign(
       action: "campaign.created",
       entityType: "Campaign",
       entityId: campaign.id,
+      metadata: { name: campaign.name, status: campaign.status },
     });
 
     return campaign;
@@ -108,8 +113,27 @@ export async function updateCampaign(
   campaignId: string,
   input: UpdateCampaignInput,
 ) {
-  await getCampaign(prisma, organizationId, campaignId);
-  await assertBelongsToOrg(prisma, organizationId, input.trackingDomainId, input.destinationId);
+  const existing = await getCampaign(prisma, organizationId, campaignId);
+
+  // A campaign serving live traffic must not have the domain it resolves
+  // requests on swapped out from under it — that would silently change
+  // which hostname's clicks the campaign's tracking links depend on
+  // without anyone pausing traffic first. Pause (or archive) the campaign
+  // to change its tracking domain. destinationId/safePageUrl are exempt:
+  // neither is read by the tracker's actual redirect decision (Phase 3's
+  // transparent architecture uses the request's own redirection_url), so
+  // changing them can't break an in-flight resolution the way trackingDomainId can.
+  if (
+    existing.status === "ACTIVE" &&
+    input.trackingDomainId !== undefined &&
+    input.trackingDomainId !== existing.trackingDomainId
+  ) {
+    throw ApiError.conflict(
+      "Cannot change trackingDomainId while the campaign is ACTIVE; pause the campaign first",
+    );
+  }
+
+  await assertReferencesValid(prisma, organizationId, input.trackingDomainId, input.destinationId);
   const safePageUrl =
     input.safePageUrl === null || input.safePageUrl === undefined
       ? input.safePageUrl
@@ -120,7 +144,6 @@ export async function updateCampaign(
       where: { id: campaignId },
       data: {
         name: input.name,
-        status: input.status,
         trackingDomainId: input.trackingDomainId,
         destinationId: input.destinationId,
         safePageUrl,
@@ -144,4 +167,110 @@ export async function updateCampaign(
 
     return campaign;
   });
+}
+
+/**
+ * Shared by activateCampaign/pauseCampaign/archiveCampaign. Validates the
+ * transition against the state machine in packages/shared/src/
+ * campaign-lifecycle.ts, then applies it with a conditional updateMany
+ * (guarding on the status just read) rather than an unconditional update —
+ * the same race-safety pattern domains.service.ts's activateTrackingDomain
+ * uses — so a concurrent transition can't be silently clobbered.
+ */
+async function transitionCampaignStatus(
+  prisma: PrismaClient,
+  actorUserId: string,
+  organizationId: string,
+  campaignId: string,
+  targetStatus: CampaignStatus,
+  auditAction: string,
+) {
+  const campaign = await getCampaign(prisma, organizationId, campaignId);
+
+  try {
+    assertValidCampaignStatusTransition(campaign.status as CampaignStatus, targetStatus);
+  } catch (error) {
+    if (error instanceof InvalidCampaignStatusTransitionError) {
+      throw ApiError.conflict(error.message);
+    }
+    throw error;
+  }
+
+  if (campaign.status === targetStatus) {
+    // Idempotent no-op: calling activate() on an already-ACTIVE campaign
+    // (etc.) succeeds without writing a redundant audit entry.
+    return campaign;
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const { count } = await tx.campaign.updateMany({
+      where: { id: campaignId, organizationId, status: campaign.status },
+      data: { status: targetStatus },
+    });
+
+    if (count === 0) {
+      throw ApiError.conflict("Campaign status changed concurrently; please retry");
+    }
+
+    const updated = await tx.campaign.findUniqueOrThrow({ where: { id: campaignId } });
+
+    await writeAuditLog(tx, {
+      organizationId,
+      actorUserId,
+      action: auditAction,
+      entityType: "Campaign",
+      entityId: campaignId,
+      metadata: { from: campaign.status, to: targetStatus },
+    });
+
+    return updated;
+  });
+}
+
+export function activateCampaign(
+  prisma: PrismaClient,
+  actorUserId: string,
+  organizationId: string,
+  campaignId: string,
+) {
+  return transitionCampaignStatus(
+    prisma,
+    actorUserId,
+    organizationId,
+    campaignId,
+    "ACTIVE",
+    "campaign.activated",
+  );
+}
+
+export function pauseCampaign(
+  prisma: PrismaClient,
+  actorUserId: string,
+  organizationId: string,
+  campaignId: string,
+) {
+  return transitionCampaignStatus(
+    prisma,
+    actorUserId,
+    organizationId,
+    campaignId,
+    "PAUSED",
+    "campaign.paused",
+  );
+}
+
+export function archiveCampaign(
+  prisma: PrismaClient,
+  actorUserId: string,
+  organizationId: string,
+  campaignId: string,
+) {
+  return transitionCampaignStatus(
+    prisma,
+    actorUserId,
+    organizationId,
+    campaignId,
+    "ARCHIVED",
+    "campaign.archived",
+  );
 }

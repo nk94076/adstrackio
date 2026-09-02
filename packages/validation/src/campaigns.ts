@@ -33,9 +33,14 @@ export const createCampaignSchema = z
   });
 export type CreateCampaignInput = z.infer<typeof createCampaignSchema>;
 
+// Deliberately no `status` field: lifecycle transitions are only made
+// through the explicit POST .../activate, .../pause, .../archive endpoints
+// (see packages/shared/src/campaign-lifecycle.ts), never as a side effect
+// of a general PATCH. A payload that includes `status` has that key
+// silently stripped (zod's default, non-strict object parsing) rather than
+// rejected — the same way any other unrecognized field is ignored.
 export const updateCampaignSchema = z.object({
   name: z.string().trim().min(1).max(160).optional(),
-  status: campaignStatusSchema.optional(),
   trackingDomainId: z.string().cuid().nullable().optional(),
   destinationId: z.string().cuid().nullable().optional(),
   safePageUrl: z.string().trim().min(1).max(2048).nullable().optional(),

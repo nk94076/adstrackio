@@ -76,16 +76,31 @@ These four models are deliberately kept as separate concerns:
   as `BOT` — plus `suspiciousTrafficPolicy`/`unknownTrafficPolicy` (Phase
   5, Prisma enum `BotTrafficPolicyAction`: `SAFE_PAGE`/`TARGET`/`BLOCK`,
   both defaulting to `TARGET`) governing where `SUSPICIOUS`/`UNKNOWN`
-  traffic goes — see `docs/architecture/bot-detection.md`.
-  `Campaign.status` does not currently gate traffic: only
-  `TrackingDomain` verification/activation and `TrackingLink.status` do.
+  traffic goes — see `docs/architecture/bot-detection.md`. `status`
+  (`CampaignStatus`: `DRAFT`/`ACTIVE`/`PAUSED`/`ARCHIVED`) now follows an
+  explicit lifecycle enforced by the service layer (Phase 6 — see
+  `docs/architecture/campaign-manager.md`), but — deliberately, a Phase 6
+  boundary rather than an oversight — it still does not itself gate
+  traffic at the tracker: only `TrackingDomain` verification/activation
+  and `TrackingLink.status` do. Assigning a `trackingDomainId` (create or
+  update) now requires that domain to be `VERIFIED` and active, and it can
+  no longer be changed at all while the campaign is `ACTIVE` (pause first)
+  — closing a gap where Phase 1-5 let a campaign point at a domain that
+  could never actually serve its traffic.
 - **TrackingLink** — the actual routable unit: `(trackingDomainId, slug)`
-  is unique. `apps/tracker`'s `GET /:slug` route resolves a request's
-  hostname+slug to this row via `TrackingResolver`
+  is unique **per domain**, not per campaign — two links in different
+  campaigns, or the same campaign, may reuse a slug as long as they're on
+  different tracking domains. `apps/tracker`'s `GET /:slug` route resolves
+  a request's hostname+slug to this row via `TrackingResolver`
   (`packages/shared/src/tracking-resolver.ts`,
   `PrismaTrackingResolver` in `apps/tracker`) to establish identity and
   organization ownership — but, per the Phase 3 architecture, does **not**
-  use `destinationId` to pick where to redirect.
+  use `destinationId` to pick where to redirect. `status`
+  (`TrackingLinkStatus`: `ACTIVE`/`PAUSED`/`ARCHIVED`) follows the same
+  kind of explicit, service-enforced lifecycle as `Campaign.status` (Phase
+  6); creating or reactivating a link also requires its
+  `trackingDomainId` to be `VERIFIED`+active, and requires its campaign to
+  not be `ARCHIVED`.
 
 ### The transparent redirect parameter (Phase 3)
 

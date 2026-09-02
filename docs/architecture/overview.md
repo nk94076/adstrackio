@@ -2,8 +2,8 @@
 
 ## Status
 
-This document describes AdstrackIO's architecture as of **Phase 5 (Bot
-Detection Integration)**. Phase 1 established the monorepo, data model,
+This document describes AdstrackIO's architecture as of **Phase 6
+(Campaign Manager)**. Phase 1 established the monorepo, data model,
 authentication, and API foundation; Phase 2 (Domain Manager) added real
 DNS verification and domain activation; Phase 3 added the real tracker
 redirect endpoint; Phase 4 added User-Agent/geo enrichment on `Click` rows
@@ -11,11 +11,15 @@ and a read-only analytics API + dashboard on top of them — see
 `docs/architecture/click-analytics.md`; Phase 5 wired bot classification
 into the tracker's actual routing decision (SUSPICIOUS/UNKNOWN previously
 had no defined behavior) via a small, campaign-configurable policy
-abstraction — see `docs/architecture/bot-detection.md`. Later phases
-(Campaign Manager, Conversion Tracking, Rules & Routing Engine,
-Affiliate/Partner System, Attribution & Advanced Reporting, API +
-Integrations, Google Certification) build on top of what's here, without
-requiring a rewrite of it.
+abstraction — see `docs/architecture/bot-detection.md`; Phase 6 turned
+Campaign/TrackingLink from unguarded CRUD rows into a real control plane —
+an explicit status lifecycle enforced in the backend (not just the
+dashboard), and domain/destination assignment rules that close IDOR and
+"campaign points at a dead domain" gaps Phase 1-5 left open — see
+`docs/architecture/campaign-manager.md`. Later phases (Conversion
+Tracking, Rules & Routing Engine, Affiliate/Partner System, Attribution &
+Advanced Reporting, API + Integrations, Google Certification) build on top
+of what's here, without requiring a rewrite of it.
 
 Nothing described as "future" or "not implemented" below exists yet. This
 document is written to stay accurate as those phases land — update it as
@@ -176,6 +180,16 @@ session model and the tradeoffs this accepts.
   multi-signal heuristic — not a production-grade, ML-based, or
   externally-validated bot-detection capability. See
   `docs/architecture/bot-detection.md`.
+- **Campaign Manager (Phase 6)** is implemented — an explicit
+  `DRAFT -> ACTIVE -> PAUSED -> ARCHIVED` campaign lifecycle and a
+  `ACTIVE -> PAUSED -> ARCHIVED` tracking-link lifecycle, both enforced in
+  the service layer (`packages/shared/src/campaign-lifecycle.ts` and
+  `tracking-link-lifecycle.ts`) via explicit `activate`/`pause`/`archive`
+  endpoints — never as a side effect of a generic `PATCH`. Campaign/
+  tracking-link domain assignment now requires a `VERIFIED`+active
+  `TrackingDomain`, and tracking links are managed through campaign-nested
+  routes (`/campaigns/:campaignId/tracking-links/...`). See
+  `docs/architecture/campaign-manager.md`.
 - **Campaign routing rules** (Phase 8) are not built — Phase 3/5's Safe
   Page + bot-traffic policy are a single `Campaign.safePageUrl` field and
   two enum fields, not a general routing-rules engine.
