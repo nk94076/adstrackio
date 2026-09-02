@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@adstrackio/database";
+import type { PrismaClient, Prisma } from "@adstrackio/database";
 import { ApiError } from "@adstrackio/shared";
 
 /**
@@ -79,26 +79,64 @@ export async function assertCampaignAcceptsNewOrReactivatedLinks(
 /**
  * Used when attributing a TrackingLink to an AffiliatePartner (Phase 9:
  * Affiliate/Partner System) — the partner must belong to this
- * organization AND already be on the target campaign's roster (a
- * CampaignAffiliatePartner row), the same two facts
- * `enforce_tracking_link_affiliate_partner` re-verifies at the database
- * layer as a backstop. Checking both here first lets the API return a
- * clean 400/409 instead of surfacing a raw trigger error.
+ * organization, must NOT be ARCHIVED, and must already be on the target
+ * campaign's roster (a CampaignAffiliatePartner row). The org/roster facts
+ * are also re-verified at the database layer by
+ * `enforce_tracking_link_affiliate_partner` as a backstop.
+ *
+ * CTO review finding (Phase 9 PR #10): this used to run against the
+ * top-level PrismaClient *before* the transaction that writes the
+ * TrackingLink row, which left a check-then-act race —
+ *
+ *   Request A: reads partner status = ACTIVE, passes the check
+ *   Request B: archives the partner (commits)
+ *   Request A: writes TrackingLink.affiliatePartnerId anyway
+ *
+ * — letting a tracking link end up attributed to a partner that was
+ * ARCHIVED by the time the write actually happened. The required
+ * invariant is absolute: an ARCHIVED AffiliatePartner must never receive a
+ * NEW TrackingLink attribution, concurrently or not.
+ *
+ * The fix: this function MUST be called with the same transaction client
+ * (`tx`) that goes on to write the TrackingLink row, and that write must
+ * happen inside the same `prisma.$transaction(...)` callback — never call
+ * this with the top-level PrismaClient and write the TrackingLink
+ * separately. It takes a `SELECT ... FOR UPDATE` row lock on the
+ * AffiliatePartner row — the exact same row
+ * affiliate-partners.service.ts's `transitionAffiliatePartnerStatus`
+ * (activate/pause/archive) and campaign-affiliate-partners.service.ts's
+ * `assignAffiliatePartnerToCampaign` already lock — before re-reading its
+ * status. Postgres serializes any two transactions that take a `FOR
+ * UPDATE` lock on the same row: whichever transaction's lock is granted
+ * first runs to completion (commit or rollback) before the other's `SELECT
+ * ... FOR UPDATE` can even return, so the loser always observes the
+ * winner's already-committed status — never a stale read from before the
+ * lock was acquired. There is no interleaving under which a concurrent
+ * archive and a concurrent tracking-link attribution can both believe the
+ * partner is ACTIVE.
  */
 export async function assertAffiliatePartnerAssignable(
-  prisma: PrismaClient,
+  tx: PrismaClient | Prisma.TransactionClient,
   organizationId: string,
   campaignId: string,
   affiliatePartnerId: string,
 ): Promise<void> {
-  const partner = await prisma.affiliatePartner.findFirst({
-    where: { id: affiliatePartnerId, organizationId },
-  });
-  if (!partner) {
+  const locked = await tx.$queryRaw<{ status: string }[]>`
+    SELECT status FROM affiliate_partners
+    WHERE id = ${affiliatePartnerId} AND "organizationId" = ${organizationId}
+    FOR UPDATE
+  `;
+  const status = locked[0]?.status;
+  if (!status) {
     throw ApiError.validation("affiliatePartnerId does not belong to this organization");
   }
+  if (status === "ARCHIVED") {
+    throw ApiError.conflict(
+      "Cannot attribute a tracking link to an ARCHIVED affiliate partner — archived partners cannot receive new assignments",
+    );
+  }
 
-  const assignment = await prisma.campaignAffiliatePartner.findUnique({
+  const assignment = await tx.campaignAffiliatePartner.findUnique({
     where: { campaignId_affiliatePartnerId: { campaignId, affiliatePartnerId } },
   });
   if (!assignment) {

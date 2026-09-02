@@ -121,6 +121,21 @@ async function createLink(
   });
 }
 
+async function updateLink(
+  cookie: string,
+  organizationId: string,
+  campaignId: string,
+  trackingLinkId: string,
+  payload: Record<string, unknown>,
+) {
+  return app.inject({
+    method: "PATCH",
+    url: `/api/v1/organizations/${organizationId}/campaigns/${campaignId}/tracking-links/${trackingLinkId}`,
+    headers: { cookie },
+    payload,
+  });
+}
+
 function auditActions(response: { json: () => { auditLogs: { action: string }[] } }): string[] {
   return response.json().auditLogs.map((log) => log.action);
 }
@@ -578,6 +593,42 @@ describe("attribution", () => {
     expect(accepted.json().trackingLink.affiliatePartnerId).toBe(partner.id);
   });
 
+  it("successfully attributes a tracking link to an explicitly ACTIVE partner already on the campaign's roster (create and update)", async () => {
+    const { owner, organizationId, campaignId, domainId, destinationId } =
+      await setupOrgWithCampaign("attribution-active-partner");
+    const partner = (
+      await createPartner(owner.cookie, organizationId, { status: "ACTIVE" })
+    ).json().affiliatePartner;
+    expect(partner.status).toBe("ACTIVE");
+    await assignPartner(owner.cookie, organizationId, campaignId, partner.id);
+
+    const created = await createLink(owner.cookie, organizationId, campaignId, {
+      trackingDomainId: domainId,
+      destinationId,
+      slug: "active-partner-create",
+      affiliatePartnerId: partner.id,
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().trackingLink.affiliatePartnerId).toBe(partner.id);
+
+    // Also exercise the update path: a link created with no attribution can
+    // be attributed to the same ACTIVE partner via PATCH.
+    const bareLink = (
+      await createLink(owner.cookie, organizationId, campaignId, {
+        trackingDomainId: domainId,
+        destinationId,
+        slug: "active-partner-update",
+      })
+    ).json().trackingLink;
+    expect(bareLink.affiliatePartnerId).toBeNull();
+
+    const updated = await updateLink(owner.cookie, organizationId, campaignId, bareLink.id, {
+      affiliatePartnerId: partner.id,
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().trackingLink.affiliatePartnerId).toBe(partner.id);
+  });
+
   it("a click carries the partner attributed via createTestClick (simulating the tracker) and remains the source of truth", async () => {
     const { owner, organizationId, campaignId, domainId, destinationId } =
       await setupOrgWithCampaign("attribution-click");
@@ -858,6 +909,182 @@ describe("concurrency", () => {
 
     const final = await prisma.affiliatePartner.findUniqueOrThrow({ where: { id: partner.id } });
     expect(final.status).toBe("ARCHIVED");
+  });
+
+  // -------------------------------------------------------------------------
+  // CTO review finding (Phase 9 PR #10): TrackingLink affiliate-partner
+  // attribution used to validate the partner (org + roster) against the
+  // top-level PrismaClient *before* the transaction that wrote the
+  // TrackingLink row, leaving a check-then-act race: a concurrent
+  // archiveAffiliatePartner could commit between the check and the write,
+  // letting a tracking link end up newly attributed to an already-ARCHIVED
+  // partner. Fixed by moving the check inside the same transaction and
+  // taking a `SELECT ... FOR UPDATE` lock on the AffiliatePartner row
+  // first — the same row transitionAffiliatePartnerStatus (activate/pause/
+  // archive) already locks, so the two code paths now serialize.
+  // -------------------------------------------------------------------------
+
+  it("sequential (deterministic): an already-ARCHIVED partner can never be newly attributed via create or update", async () => {
+    const { owner, organizationId, campaignId, domainId, destinationId } =
+      await setupOrgWithCampaign("archived-sequential");
+    const partner = (
+      await createPartner(owner.cookie, organizationId, { status: "ACTIVE" })
+    ).json().affiliatePartner;
+    await assignPartner(owner.cookie, organizationId, campaignId, partner.id);
+
+    const archiveRes = await app.inject({
+      method: "POST",
+      url: `/api/v1/organizations/${organizationId}/affiliate-partners/${partner.id}/archive`,
+      headers: { cookie: owner.cookie },
+    });
+    expect(archiveRes.statusCode).toBe(200);
+    expect(archiveRes.json().affiliatePartner.status).toBe("ARCHIVED");
+
+    // create: attempting to attribute a brand-new link to the now-ARCHIVED
+    // partner must be rejected, even though it's still on the roster.
+    const createAttempt = await createLink(owner.cookie, organizationId, campaignId, {
+      trackingDomainId: domainId,
+      destinationId,
+      slug: "archived-sequential-create",
+      affiliatePartnerId: partner.id,
+    });
+    expect(createAttempt.statusCode).toBe(409);
+    const createdLinks = await prisma.trackingLink.findMany({ where: { campaignId } });
+    expect(createdLinks).toHaveLength(0);
+
+    // update: attempting to attribute an existing (unattributed) link to
+    // the now-ARCHIVED partner must also be rejected.
+    const bareLink = (
+      await createLink(owner.cookie, organizationId, campaignId, {
+        trackingDomainId: domainId,
+        destinationId,
+        slug: "archived-sequential-update",
+      })
+    ).json().trackingLink;
+    expect(bareLink.affiliatePartnerId).toBeNull();
+
+    const updateAttempt = await updateLink(owner.cookie, organizationId, campaignId, bareLink.id, {
+      affiliatePartnerId: partner.id,
+    });
+    expect(updateAttempt.statusCode).toBe(409);
+
+    const stillBare = await prisma.trackingLink.findUniqueOrThrow({ where: { id: bareLink.id } });
+    expect(stillBare.affiliatePartnerId).toBeNull();
+  });
+
+  it("handles a concurrent archive + createTrackingLink attribution race safely: the new link can never end up attributed to an ARCHIVED partner, and historical Click attribution is unaffected", async () => {
+    const { owner, organizationId, campaignId, domainId, destinationId } =
+      await setupOrgWithCampaign("archived-race-create");
+    const partner = (
+      await createPartner(owner.cookie, organizationId, { status: "ACTIVE" })
+    ).json().affiliatePartner;
+    await assignPartner(owner.cookie, organizationId, campaignId, partner.id);
+
+    // A link + click attributed to the partner *before* the race, while it
+    // was genuinely ACTIVE — this is the "historical attribution" that
+    // must remain completely untouched by the race below.
+    const priorLink = (
+      await createLink(owner.cookie, organizationId, campaignId, {
+        trackingDomainId: domainId,
+        destinationId,
+        slug: "archived-race-create-prior",
+        affiliatePartnerId: partner.id,
+      })
+    ).json().trackingLink;
+    const priorClick = await createTestClick(organizationId, campaignId, priorLink.id, {
+      affiliatePartnerId: partner.id,
+    });
+
+    const [archiveRes, createRes] = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/affiliate-partners/${partner.id}/archive`,
+        headers: { cookie: owner.cookie },
+      }),
+      createLink(owner.cookie, organizationId, campaignId, {
+        trackingDomainId: domainId,
+        destinationId,
+        slug: "archived-race-create-new",
+        affiliatePartnerId: partner.id,
+      }),
+    ]);
+
+    // Archive always succeeds (nothing blocks it); the create either wins
+    // the lock race (partner still ACTIVE at that instant -> 201, a
+    // legitimate attribution) or loses it (partner already ARCHIVED by the
+    // time its lock is granted -> 409). Both are valid serializations of
+    // the same two concurrent transactions locking the same row — what
+    // must NEVER happen is a 201 whose underlying transaction observed a
+    // stale ACTIVE read from before the archive committed.
+    expect(archiveRes.statusCode).toBe(200);
+    expect([201, 409]).toContain(createRes.statusCode);
+
+    const newLink = await prisma.trackingLink.findFirst({
+      where: { campaignId, slug: "archived-race-create-new" },
+    });
+    if (createRes.statusCode === 201) {
+      expect(newLink).not.toBeNull();
+      expect(newLink!.affiliatePartnerId).toBe(partner.id);
+    } else {
+      expect(newLink).toBeNull();
+    }
+
+    // The partner ends up ARCHIVED regardless of ordering.
+    const finalPartner = await prisma.affiliatePartner.findUniqueOrThrow({ where: { id: partner.id } });
+    expect(finalPartner.status).toBe("ARCHIVED");
+
+    // Historical attribution (the link/click created before the race) is
+    // completely unaffected by the archive or by the race's outcome.
+    const stillPriorLink = await prisma.trackingLink.findUniqueOrThrow({ where: { id: priorLink.id } });
+    expect(stillPriorLink.affiliatePartnerId).toBe(partner.id);
+    const stillPriorClick = await prisma.click.findUniqueOrThrow({ where: { id: priorClick.id } });
+    expect(stillPriorClick.affiliatePartnerId).toBe(partner.id);
+  });
+
+  it("handles a concurrent archive + updateTrackingLink attribution race safely: an existing link can never be newly re-attributed to an ARCHIVED partner", async () => {
+    const { owner, organizationId, campaignId, domainId, destinationId } =
+      await setupOrgWithCampaign("archived-race-update");
+    const partner = (
+      await createPartner(owner.cookie, organizationId, { status: "ACTIVE" })
+    ).json().affiliatePartner;
+    await assignPartner(owner.cookie, organizationId, campaignId, partner.id);
+
+    const bareLink = (
+      await createLink(owner.cookie, organizationId, campaignId, {
+        trackingDomainId: domainId,
+        destinationId,
+        slug: "archived-race-update-link",
+      })
+    ).json().trackingLink;
+    expect(bareLink.affiliatePartnerId).toBeNull();
+
+    const [archiveRes, updateRes] = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/affiliate-partners/${partner.id}/archive`,
+        headers: { cookie: owner.cookie },
+      }),
+      updateLink(owner.cookie, organizationId, campaignId, bareLink.id, {
+        affiliatePartnerId: partner.id,
+      }),
+    ]);
+
+    expect(archiveRes.statusCode).toBe(200);
+    expect([200, 409]).toContain(updateRes.statusCode);
+
+    const finalLink = await prisma.trackingLink.findUniqueOrThrow({ where: { id: bareLink.id } });
+    if (updateRes.statusCode === 200) {
+      // Won the lock race before the archive committed — a legitimate
+      // attribution to a partner that was genuinely still ACTIVE.
+      expect(finalLink.affiliatePartnerId).toBe(partner.id);
+    } else {
+      // Lost the race — the link must remain unattributed, never
+      // half-applied.
+      expect(finalLink.affiliatePartnerId).toBeNull();
+    }
+
+    const finalPartner = await prisma.affiliatePartner.findUniqueOrThrow({ where: { id: partner.id } });
+    expect(finalPartner.status).toBe("ARCHIVED");
   });
 });
 
