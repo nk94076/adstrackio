@@ -432,6 +432,81 @@ this section covers its security-relevant properties specifically.
   careless `MEMBER` account can report events but cannot single-handedly turn
   them into approved, revenue-counted conversions.
 
+## Rules & Routing Engine (apps/api + apps/tracker, Phase 8)
+
+Full design rationale is in `docs/architecture/rules-routing.md`; this
+section covers its security-relevant properties specifically.
+
+- **A rule can never specify an arbitrary redirect destination.**
+  `RoutingRuleAction` is the exact same three-value type Phase 5's
+  `BotTrafficPolicyAction` already established (`TARGET`/`SAFE_PAGE`/
+  `BLOCK`) — there is no field anywhere on `RoutingRule` capable of
+  encoding a URL. `TARGET` still means "follow the request's own
+  validated `redirection_url`," never a rule-configured value — this is
+  what keeps the Google Transparent Click Tracker architecture (Phase 3)
+  intact even though routing decisions are now rule-driven. Covered by a
+  dedicated tracker test asserting the exact request-supplied
+  `redirection_url` is followed even when a `TARGET` rule matches.
+- **No eval, no expression language.** A condition's `field` is a closed
+  6-value enum, `operator` a closed 4-value enum, `value` a bounded string
+  or bounded string array (max 25 entries) — validated by
+  `packages/validation/src/routing-rules.ts`. There is no code path that
+  interprets a rule's JSON as anything other than a fixed
+  field/operator/value comparison; a malicious or malformed rule payload
+  cannot cause arbitrary code execution or an unbounded computation.
+- **`BOT` classification can never be overridden by a rule.** A `BOT`
+  verdict always routes to `SAFE_PAGE`; routing rules are not even
+  evaluated for `BOT` traffic. This preserves Phase 5's original decision
+  that bot/human classification routing is not configurable, closing off
+  any path where a crafted rule could route known-automated traffic to a
+  real destination.
+- **organizationId/campaignId can never be client-supplied, and is
+  enforced twice** — the same pattern Phase 7 established for Conversion
+  attribution. The service layer only ever takes these from the
+  authenticated, membership-checked URL path; as a database-level
+  backstop, `enforce_routing_rule_campaign_organization` (migration
+  `20260902170000_rules_routing_engine`) re-derives and validates
+  `organizationId` against the referenced campaign at insert time and
+  forbids changing either column afterward.
+- **Priority collisions are a real database constraint, not
+  application-level tie-breaking.** `@@unique([campaignId, priority])`
+  means two rules on one campaign can never share a priority — there is
+  no ambiguous evaluation order to reason about or get wrong.
+- **Status can never be forced through a generic update endpoint** — no
+  `PATCH` accepts a `status` field (silently ignored, not rejected, the
+  same convention Campaign/TrackingLink/Conversion already established);
+  only the explicit `POST .../activate`/`.../deactivate` endpoints (no
+  request body) change it. Concurrent duplicate activate/deactivate calls
+  on the same rule are resolved by `SELECT ... FOR UPDATE` row locking
+  (the same pattern PR #8's review established for Conversion, not the
+  conditional-updateMany pattern earlier phases used) — a same-target
+  concurrent retry is idempotent success, never a spurious `409`. Covered
+  by concurrent activate+activate, deactivate+deactivate, and
+  activate+deactivate integration tests.
+- **Rule evaluation is bounded and cannot become a hot-path DoS vector.**
+  The tracker's rule fetch itself is bounded (`LIMIT
+  MAX_ACTIVE_RULES_PER_CAMPAIGN`, currently 50) and `evaluateRules`
+  independently re-bounds defensively even if handed more — no request
+  can trigger unbounded rule evaluation regardless of how many rules a
+  campaign accumulates. `MAX_ACTIVE_RULES_PER_CAMPAIGN` is also enforced
+  (advisory, with a documented narrow TOCTOU window — see
+  `docs/architecture/rules-routing.md#max-active-rules-per-campaign`) when
+  rules are created/activated, so an operator gets a clear error instead
+  of silently-never-evaluated rules.
+- **The `COUNTRY` condition never trusts a client-controlled header.**
+  Only a small, fixed list of CDN-injected geo headers
+  (`cf-ipcountry`/`x-vercel-ip-country`/`cloudfront-viewer-country`) is
+  read — never a header name an ordinary client request could set to
+  spoof a country signal in an environment where the real CDN header
+  would otherwise be overwritten by the edge network before reaching this
+  service. With no such CDN in front of the tracker (this codebase's own
+  default deployment), no `COUNTRY` condition can ever match — see
+  `docs/architecture/rules-routing.md#country-signal-a-deliberate-limitation`.
+- **RBAC mirrors Campaign's own asymmetry.** `VIEWER` reads; `MEMBER`
+  creates/updates/deletes; `ADMIN` is required for activate/deactivate —
+  a compromised or careless `MEMBER` account can draft/edit rules but
+  cannot single-handedly put one into production traffic.
+
 ## Click Analytics (apps/api, Phase 4)
 
 Full design rationale is in `docs/architecture/click-analytics.md`; this
