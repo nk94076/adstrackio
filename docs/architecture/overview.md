@@ -2,8 +2,8 @@
 
 ## Status
 
-This document describes AdstrackIO's architecture as of **Phase 7
-(Conversion Tracking)**. Phase 1 established the monorepo, data model,
+This document describes AdstrackIO's architecture as of **Phase 8
+(Rules & Routing Engine)**. Phase 1 established the monorepo, data model,
 authentication, and API foundation; Phase 2 (Domain Manager) added real
 DNS verification and domain activation; Phase 3 added the real tracker
 redirect endpoint; Phase 4 added User-Agent/geo enrichment on `Click` rows
@@ -20,8 +20,12 @@ dashboard), and domain/destination assignment rules that close IDOR and
 reporting, always attributed through a real `Click` (never a
 client-asserted campaign/tracking-link ID), with database-enforced
 deduplication and its own status lifecycle — see
-`docs/architecture/conversion-tracking.md`. Later phases (Rules & Routing
-Engine, Affiliate/Partner System, Attribution & Advanced Reporting, API +
+`docs/architecture/conversion-tracking.md`; Phase 8 added a campaign-scoped,
+priority-ordered routing-rule engine that composes (not duplicates) Phase
+5's bot-traffic policy — a rule can only ever pick among the same
+TARGET/SAFE_PAGE/BLOCK outcomes the tracker already knew how to execute,
+never an arbitrary URL — see `docs/architecture/rules-routing.md`. Later
+phases (Affiliate/Partner System, Attribution & Advanced Reporting, API +
 Integrations, Google Certification) build on top of what's here, without
 requiring a rewrite of it.
 
@@ -151,8 +155,13 @@ session model and the tradeoffs this accepts.
   `docs/architecture/click-analytics.md`. Phase 5 added
   `packages/shared/src/bot-traffic-policy.ts` — a small, explicit
   classification-to-routing-action resolver (`resolveBotRoutingAction`),
-  deliberately not the full Rules & Routing Engine Phase 8 is expected to
-  build — see `docs/architecture/bot-detection.md`.
+  deliberately not a full rules engine — see
+  `docs/architecture/bot-detection.md`. Phase 8 added
+  `packages/shared/src/routing-rules.ts` (the pure `evaluateRules`
+  evaluator and `resolveRoutingDecision`, which composes rather than
+  replaces `resolveBotRoutingAction`) and
+  `packages/shared/src/routing-signals.ts` (synchronous country/referrer
+  signal extraction) — see `docs/architecture/rules-routing.md`.
 - **packages/validation** holds Zod schemas so the same validation rules
   can be reused by the API (server-side enforcement) and, if useful later,
   by the dashboard for client-side form validation — without duplicating
@@ -203,9 +212,16 @@ session model and the tradeoffs this accepts.
   `PENDING -> APPROVED/REJECTED`, `APPROVED -> REVERSED` status lifecycle
   enforced in the backend. See
   `docs/architecture/conversion-tracking.md`.
-- **Campaign routing rules** (Phase 8) are not built — Phase 3/5's Safe
-  Page + bot-traffic policy are a single `Campaign.safePageUrl` field and
-  two enum fields, not a general routing-rules engine.
+- **Rules & Routing Engine (Phase 8)** is implemented — a campaign-scoped,
+  priority-ordered `RoutingRule` model with typed/bounded conditions (bot
+  classification, country, device type, browser, OS, referrer host) and
+  the same three TARGET/SAFE_PAGE/BLOCK outcomes Phase 3/5 already
+  execute (no arbitrary rule-configured URLs, no `eval`). Composes rather
+  than duplicates Phase 5's bot-traffic policy: a `BOT` classification
+  always routes to `SAFE_PAGE` regardless of any rule; routing rules are
+  consulted for `HUMAN`/`SUSPICIOUS`/`UNKNOWN` traffic; a campaign with no
+  rules configured behaves identically to before this phase existed. See
+  `docs/architecture/rules-routing.md`.
 - **Postbacks/webhooks for conversion status changes** (Phase 11) are out
   of scope so far — Phase 7 exposes the conversion service functions as a
   clean boundary for a future API/integrations layer to build on, but no

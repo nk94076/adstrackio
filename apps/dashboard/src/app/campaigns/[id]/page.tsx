@@ -11,12 +11,44 @@ import type {
   Campaign,
   CampaignStatus,
   Destination,
+  RoutingCondition,
+  RoutingConditionField,
+  RoutingConditionOperator,
+  RoutingRule,
+  RoutingRuleAction,
   TrackingDomain,
   TrackingLink,
   TrackingLinkStatus,
 } from "@/lib/types";
 
 const BOT_POLICY_OPTIONS: BotTrafficPolicyAction[] = ["TARGET", "SAFE_PAGE", "BLOCK"];
+
+const ROUTING_ACTION_OPTIONS: RoutingRuleAction[] = ["TARGET", "SAFE_PAGE", "BLOCK"];
+const ROUTING_FIELD_OPTIONS: RoutingConditionField[] = [
+  "BOT_CLASSIFICATION",
+  "COUNTRY",
+  "DEVICE_TYPE",
+  "BROWSER",
+  "OS",
+  "REFERRER_HOST",
+];
+const ROUTING_OPERATOR_OPTIONS: RoutingConditionOperator[] = ["EQUALS", "NOT_EQUALS", "IN", "NOT_IN"];
+
+const ROUTING_RULE_STATUS_STYLES: Record<RoutingRule["status"], string> = {
+  ACTIVE: "bg-green-50 text-green-700",
+  INACTIVE: "bg-slate-100 text-slate-500",
+};
+
+function describeCondition(condition: RoutingCondition): string {
+  const value = Array.isArray(condition.value) ? condition.value.join(", ") : condition.value;
+  const operatorLabel: Record<RoutingConditionOperator, string> = {
+    EQUALS: "=",
+    NOT_EQUALS: "≠",
+    IN: "in",
+    NOT_IN: "not in",
+  };
+  return `${condition.field} ${operatorLabel[condition.operator]} ${value}`;
+}
 
 const CAMPAIGN_STATUS_STYLES: Record<CampaignStatus, string> = {
   DRAFT: "bg-slate-100 text-slate-600",
@@ -67,6 +99,7 @@ export default function CampaignDetailPage() {
   const [domains, setDomains] = useState<TrackingDomain[]>([]);
   const [destinations, setDestinations] = useState<Destination[]>([]);
   const [trackingLinks, setTrackingLinks] = useState<TrackingLink[]>([]);
+  const [routingRules, setRoutingRules] = useState<RoutingRule[]>([]);
   const [notFound, setNotFound] = useState(false);
 
   const [form, setForm] = useState({
@@ -88,10 +121,19 @@ export default function CampaignDetailPage() {
   const [pendingActionId, setPendingActionId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  const [ruleName, setRuleName] = useState("");
+  const [rulePriority, setRulePriority] = useState("");
+  const [ruleAction, setRuleAction] = useState<RoutingRuleAction>("BLOCK");
+  const [draftConditions, setDraftConditions] = useState<RoutingCondition[]>([]);
+  const [conditionField, setConditionField] = useState<RoutingConditionField>("COUNTRY");
+  const [conditionOperator, setConditionOperator] = useState<RoutingConditionOperator>("EQUALS");
+  const [conditionValue, setConditionValue] = useState("");
+  const [ruleError, setRuleError] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     if (!activeOrganizationId || !campaignId) return;
     try {
-      const [campaignRes, domainsRes, destinationsRes, linksRes] = await Promise.all([
+      const [campaignRes, domainsRes, destinationsRes, linksRes, rulesRes] = await Promise.all([
         apiFetch<{ campaign: Campaign }>(
           `/api/v1/organizations/${activeOrganizationId}/campaigns/${campaignId}`,
         ),
@@ -104,11 +146,15 @@ export default function CampaignDetailPage() {
         apiFetch<{ trackingLinks: TrackingLink[] }>(
           `/api/v1/organizations/${activeOrganizationId}/campaigns/${campaignId}/tracking-links`,
         ),
+        apiFetch<{ rules: RoutingRule[] }>(
+          `/api/v1/organizations/${activeOrganizationId}/campaigns/${campaignId}/rules`,
+        ),
       ]);
       setCampaign(campaignRes.campaign);
       setDomains(domainsRes.domains);
       setDestinations(destinationsRes.destinations);
       setTrackingLinks(linksRes.trackingLinks);
+      setRoutingRules(rulesRes.rules);
       setForm({
         name: campaignRes.campaign.name,
         trackingDomainId: campaignRes.campaign.trackingDomainId ?? "",
@@ -216,6 +262,88 @@ export default function CampaignDetailPage() {
 
   function hostnameFor(id: string) {
     return domains.find((d) => d.id === id)?.hostname ?? id;
+  }
+
+  function handleAddCondition() {
+    if (!conditionValue.trim()) return;
+    const value: string | string[] =
+      conditionOperator === "IN" || conditionOperator === "NOT_IN"
+        ? conditionValue
+            .split(",")
+            .map((v) => v.trim())
+            .filter(Boolean)
+        : conditionValue.trim();
+    setDraftConditions((prev) => [...prev, { field: conditionField, operator: conditionOperator, value }]);
+    setConditionValue("");
+  }
+
+  function handleRemoveCondition(index: number) {
+    setDraftConditions((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  async function handleCreateRule(event: React.FormEvent) {
+    event.preventDefault();
+    if (!activeOrganizationId || !campaign) return;
+    setRuleError(null);
+    if (draftConditions.length === 0) {
+      setRuleError("Add at least one condition before creating a rule");
+      return;
+    }
+    try {
+      await apiFetch(
+        `/api/v1/organizations/${activeOrganizationId}/campaigns/${campaign.id}/rules`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name: ruleName,
+            priority: Number(rulePriority),
+            action: ruleAction,
+            conditions: draftConditions,
+          }),
+        },
+      );
+      setRuleName("");
+      setRulePriority("");
+      setRuleAction("BLOCK");
+      setDraftConditions([]);
+      await load();
+    } catch (err) {
+      setRuleError(err instanceof ApiClientError ? err.message : "Failed to create routing rule");
+    }
+  }
+
+  async function handleRuleAction(ruleId: string, action: "activate" | "deactivate") {
+    if (!activeOrganizationId || !campaign) return;
+    setActionError(null);
+    setPendingActionId(ruleId);
+    try {
+      await apiFetch(
+        `/api/v1/organizations/${activeOrganizationId}/campaigns/${campaign.id}/rules/${ruleId}/${action}`,
+        { method: "POST" },
+      );
+      await load();
+    } catch (err) {
+      setActionError(err instanceof ApiClientError ? err.message : `Failed to ${action} rule`);
+    } finally {
+      setPendingActionId(null);
+    }
+  }
+
+  async function handleDeleteRule(ruleId: string) {
+    if (!activeOrganizationId || !campaign) return;
+    setActionError(null);
+    setPendingActionId(ruleId);
+    try {
+      await apiFetch(
+        `/api/v1/organizations/${activeOrganizationId}/campaigns/${campaign.id}/rules/${ruleId}`,
+        { method: "DELETE" },
+      );
+      await load();
+    } catch (err) {
+      setActionError(err instanceof ApiClientError ? err.message : "Failed to delete rule");
+    } finally {
+      setPendingActionId(null);
+    }
   }
 
   if (notFound) {
@@ -498,6 +626,192 @@ export default function CampaignDetailPage() {
                 <tr>
                   <td className="px-4 py-6 text-center text-slate-500" colSpan={canRunLifecycle ? 3 : 2}>
                     No tracking links yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="card p-6">
+          <h2 className="text-sm font-semibold text-slate-800">Routing rules</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Rules are evaluated in ascending priority order (lower number first); the first rule whose
+            conditions all match decides the action. A BOT-classified visitor always goes to the Safe
+            Page regardless of any rule. A visitor with no matching rule falls back to this
+            campaign&apos;s SUSPICIOUS/UNKNOWN traffic policy above (HUMAN traffic with no matching rule
+            always goes to the transparent destination).
+          </p>
+
+          {canManage && (
+            <form onSubmit={handleCreateRule} className="mt-4 space-y-3 rounded-md border border-slate-200 p-4">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+                <input
+                  className="input"
+                  placeholder="Rule name"
+                  value={ruleName}
+                  onChange={(e) => setRuleName(e.target.value)}
+                  required
+                />
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  placeholder="Priority (lower = first)"
+                  value={rulePriority}
+                  onChange={(e) => setRulePriority(e.target.value)}
+                  required
+                />
+                <select
+                  className="input"
+                  value={ruleAction}
+                  onChange={(e) => setRuleAction(e.target.value as RoutingRuleAction)}
+                >
+                  {ROUTING_ACTION_OPTIONS.map((action) => (
+                    <option key={action} value={action}>
+                      {action}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <p className="label">Conditions (all must match)</p>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
+                  <select
+                    className="input"
+                    value={conditionField}
+                    onChange={(e) => setConditionField(e.target.value as RoutingConditionField)}
+                  >
+                    {ROUTING_FIELD_OPTIONS.map((field) => (
+                      <option key={field} value={field}>
+                        {field}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="input"
+                    value={conditionOperator}
+                    onChange={(e) => setConditionOperator(e.target.value as RoutingConditionOperator)}
+                  >
+                    {ROUTING_OPERATOR_OPTIONS.map((operator) => (
+                      <option key={operator} value={operator}>
+                        {operator}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    className="input"
+                    placeholder={
+                      conditionOperator === "IN" || conditionOperator === "NOT_IN"
+                        ? "Comma-separated values, e.g. US, GB"
+                        : "Value, e.g. US"
+                    }
+                    value={conditionValue}
+                    onChange={(e) => setConditionValue(e.target.value)}
+                  />
+                  <button type="button" className="btn-secondary" onClick={handleAddCondition}>
+                    Add condition
+                  </button>
+                </div>
+                {draftConditions.length > 0 && (
+                  <ul className="mt-2 space-y-1">
+                    {draftConditions.map((condition, index) => (
+                      <li
+                        key={index}
+                        className="flex items-center justify-between rounded bg-slate-50 px-3 py-1.5 text-xs text-slate-700"
+                      >
+                        <span className="font-mono">{describeCondition(condition)}</span>
+                        <button
+                          type="button"
+                          className="text-red-600 hover:text-red-700"
+                          onClick={() => handleRemoveCondition(index)}
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              <button type="submit" className="btn-primary">
+                Create rule
+              </button>
+            </form>
+          )}
+          {ruleError && <p className="mt-2 text-sm text-red-600">{ruleError}</p>}
+
+          <table className="mt-4 w-full text-left text-sm">
+            <thead className="bg-slate-50 text-slate-500">
+              <tr>
+                <th className="px-4 py-2 font-medium">Priority</th>
+                <th className="px-4 py-2 font-medium">Name</th>
+                <th className="px-4 py-2 font-medium">Conditions</th>
+                <th className="px-4 py-2 font-medium">Action</th>
+                <th className="px-4 py-2 font-medium">Status</th>
+                {(canRunLifecycle || canManage) && <th className="px-4 py-2 font-medium">Actions</th>}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {routingRules.map((rule) => (
+                <tr key={rule.id}>
+                  <td className="px-4 py-3 text-slate-800">{rule.priority}</td>
+                  <td className="px-4 py-3 text-slate-800">{rule.name}</td>
+                  <td className="px-4 py-3 font-mono text-xs text-slate-600">
+                    {rule.conditions.map(describeCondition).join(" AND ") || "(always matches)"}
+                  </td>
+                  <td className="px-4 py-3 text-slate-800">{rule.action}</td>
+                  <td className="px-4 py-3">
+                    <span className={`badge ${ROUTING_RULE_STATUS_STYLES[rule.status]}`}>
+                      {rule.status}
+                    </span>
+                  </td>
+                  {(canRunLifecycle || canManage) && (
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap gap-2">
+                        {canRunLifecycle && rule.status === "ACTIVE" && (
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            disabled={pendingActionId === rule.id}
+                            onClick={() => handleRuleAction(rule.id, "deactivate")}
+                          >
+                            Deactivate
+                          </button>
+                        )}
+                        {canRunLifecycle && rule.status === "INACTIVE" && (
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            disabled={pendingActionId === rule.id}
+                            onClick={() => handleRuleAction(rule.id, "activate")}
+                          >
+                            Activate
+                          </button>
+                        )}
+                        {canManage && (
+                          <button
+                            type="button"
+                            className="btn-secondary"
+                            disabled={pendingActionId === rule.id}
+                            onClick={() => handleDeleteRule(rule.id)}
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  )}
+                </tr>
+              ))}
+              {routingRules.length === 0 && (
+                <tr>
+                  <td
+                    className="px-4 py-6 text-center text-slate-500"
+                    colSpan={canRunLifecycle || canManage ? 6 : 5}
+                  >
+                    No routing rules yet.
                   </td>
                 </tr>
               )}

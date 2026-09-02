@@ -47,6 +47,7 @@ function fakeHumanResolver(overrides: Partial<TrackingResolutionResult> = {}) {
     organizationId: "org_1",
     safePageUrl: null,
     botTrafficPolicy: DEFAULT_BOT_TRAFFIC_POLICY,
+    routingRules: [],
     ...overrides,
   });
 }
@@ -109,6 +110,7 @@ describe("tracker service boundary", () => {
             organizationId: "x",
             safePageUrl: null,
             botTrafficPolicy: DEFAULT_BOT_TRAFFIC_POLICY,
+            routingRules: [],
           });
         },
       },

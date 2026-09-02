@@ -78,6 +78,36 @@ export interface Campaign {
   createdAt: string;
 }
 
+export type RoutingRuleStatus = "ACTIVE" | "INACTIVE";
+export type RoutingRuleAction = "TARGET" | "SAFE_PAGE" | "BLOCK";
+export type RoutingConditionField =
+  | "BOT_CLASSIFICATION"
+  | "COUNTRY"
+  | "DEVICE_TYPE"
+  | "BROWSER"
+  | "OS"
+  | "REFERRER_HOST";
+export type RoutingConditionOperator = "EQUALS" | "NOT_EQUALS" | "IN" | "NOT_IN";
+
+export interface RoutingCondition {
+  field: RoutingConditionField;
+  operator: RoutingConditionOperator;
+  value: string | string[];
+}
+
+/** Campaign-scoped routing rule (Phase 8: Rules & Routing Engine) — see
+ * docs/architecture/rules-routing.md. */
+export interface RoutingRule {
+  id: string;
+  campaignId: string;
+  name: string;
+  status: RoutingRuleStatus;
+  priority: number;
+  conditions: RoutingCondition[];
+  action: RoutingRuleAction;
+  createdAt: string;
+}
+
 export type TrackingLinkStatus = "ACTIVE" | "PAUSED" | "ARCHIVED";
 
 export interface TrackingLink {

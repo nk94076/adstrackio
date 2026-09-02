@@ -24,6 +24,9 @@ export interface BuildTrackerAppOptions {
   botDetectionEngine?: BotDetectionEngine;
   userAgentParser?: UserAgentParser;
   geoLocationProvider?: GeoLocationProvider;
+  /** Overrides options.env.TRUSTED_EDGE_SECRET — test-only escape hatch,
+   * the same pattern every other injectable dependency here uses. */
+  trustedEdgeSecret?: string;
 }
 
 /**
@@ -72,6 +75,12 @@ export async function buildTrackerApp(options: BuildTrackerAppOptions): Promise<
   // Falls back to AUTH_SECRET so no new required env var is introduced —
   // see packages/config/src/schema.ts for CLICK_IP_HASH_SALT.
   const ipHashSalt = options.env.CLICK_IP_HASH_SALT ?? options.env.AUTH_SECRET;
+  // Unset by default (no fallback to another secret, unlike ipHashSalt
+  // above) — see packages/config/src/schema.ts and
+  // packages/shared/src/routing-signals.ts for why COUNTRY routing must
+  // stay inert until an operator explicitly configures both sides of the
+  // trusted-edge boundary.
+  const trustedEdgeSecret = options.trustedEdgeSecret ?? options.env.TRUSTED_EDGE_SECRET;
 
   await fastify.register(registerTrackerRoutes, {
     resolver,
@@ -79,6 +88,7 @@ export async function buildTrackerApp(options: BuildTrackerAppOptions): Promise<
     userAgentParser,
     geoLocationProvider,
     ipHashSalt,
+    trustedEdgeSecret,
   });
 
   return fastify;

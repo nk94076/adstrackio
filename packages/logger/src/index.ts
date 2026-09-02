@@ -24,13 +24,23 @@ const SENSITIVE_KEYS = [
   "apiKey",
 ];
 
-export const REDACT_PATHS = SENSITIVE_KEYS.flatMap((key) => [
-  key,
-  `*.${key}`,
-  `*.*.${key}`,
-  `req.headers.${key.toLowerCase()}`,
-  `res.headers.${key.toLowerCase()}`,
-]);
+export const REDACT_PATHS = [
+  ...SENSITIVE_KEYS.flatMap((key) => [
+    key,
+    `*.${key}`,
+    `*.*.${key}`,
+    `req.headers.${key.toLowerCase()}`,
+    `res.headers.${key.toLowerCase()}`,
+  ]),
+  // Dashed header name, so it needs its own explicit bracket-notation
+  // path rather than fitting the plain-property pattern above — the
+  // Phase 8 trusted-edge boundary secret (see
+  // packages/shared/src/routing-signals.ts and TRUSTED_EDGE_SECRET in
+  // packages/config). Not currently logged wholesale by any request
+  // serializer in this codebase, but this stays defense-in-depth against
+  // a future change that starts logging raw headers.
+  'req.headers["x-adstrackio-edge-secret"]',
+];
 
 export interface CreateLoggerOptions {
   name: string;

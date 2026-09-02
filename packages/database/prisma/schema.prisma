@@ -70,6 +70,20 @@ enum ConversionStatus {
   REVERSED
 }
 
+enum RoutingRuleStatus {
+  ACTIVE
+  INACTIVE
+}
+
+/// Same three physical outcomes as BotTrafficPolicyAction (Phase 5) — a
+/// RoutingRule never invents a fourth kind of destination. See
+/// packages/shared/src/routing-rules.ts.
+enum RoutingRuleAction {
+  TARGET
+  SAFE_PAGE
+  BLOCK
+}
+
 enum BotClassification {
   UNKNOWN
   HUMAN
@@ -140,6 +154,7 @@ model Organization {
   conversions            Conversion[]
   referralConfigurations ReferralConfiguration[]
   auditLogs              AuditLog[]
+  routingRules           RoutingRule[]
 
   @@map("organizations")
 }
@@ -253,6 +268,7 @@ model Campaign {
   clicks                 Click[]
   conversions            Conversion[]
   referralConfigurations ReferralConfiguration[]
+  routingRules           RoutingRule[]
 
   @@index([organizationId])
   @@map("campaigns")
@@ -416,6 +432,59 @@ model Conversion {
   @@index([clickId])
   @@index([status, occurredAt])
   @@map("conversions")
+}
+
+/// A campaign-scoped, priority-ordered routing rule (Phase 8: Rules &
+/// Routing Engine) — see docs/architecture/rules-routing.md.
+///
+/// `conditions` is a JSON array of `{field, operator, value}` objects
+/// (packages/shared/src/routing-rules.ts's `RoutingCondition`), validated
+/// at write time by packages/validation/src/routing-rules.ts and bounded
+/// (max 10 conditions per rule). This is deliberately NOT an arbitrary
+/// expression language or eval'able code — the set of fields and operators
+/// is a small closed enum, matching the same "no eval, typed and bounded"
+/// posture Phase 7 established for Conversion.metadata.
+///
+/// `action` reuses the exact same TARGET/SAFE_PAGE/BLOCK outcomes the
+/// tracker's redirect switch already executes for bot-policy routing (see
+/// apps/tracker/src/modules/tracker/tracker.routes.ts) — a rule can never
+/// name an arbitrary URL of its own. TARGET still means "follow the
+/// request's own transparent redirection_url", never a rule-configured
+/// destination — this is what keeps the Google Transparent Click Tracker
+/// architecture (Phase 3) intact.
+///
+/// `priority` is a plain integer, unique per campaign (@@unique below) —
+/// lower values are evaluated first. Uniqueness is enforced at the
+/// database level specifically so evaluation order is never ambiguous:
+/// there is no hidden tie-break rule to reason about (e.g. createdAt or
+/// id order), because two rules on the same campaign can never share a
+/// priority in the first place.
+///
+/// organizationId/campaignId are set once at creation from the
+/// authenticated request path (never client-body-supplied) and never
+/// updated afterward; `enforce_routing_rule_campaign_organization`
+/// (migration `20260902170000_rules_routing_engine`) enforces both facts
+/// at the database level as a backstop, mirroring the pattern
+/// `enforce_conversion_click_attribution` established in Phase 7.
+model RoutingRule {
+  id             String            @id @default(cuid())
+  organizationId String
+  campaignId     String
+  name           String
+  status         RoutingRuleStatus @default(ACTIVE)
+  priority       Int
+  conditions     Json
+  action         RoutingRuleAction
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign     Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, priority])
+  @@index([campaignId, status, priority])
+  @@index([organizationId])
+  @@map("routing_rules")
 }
 
 /// Foundation model only. Classification/scoring is expected to be produced

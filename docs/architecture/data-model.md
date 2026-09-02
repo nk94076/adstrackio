@@ -259,6 +259,43 @@ rather than being rediscovered under load:
   `ReferralConfiguration.campaignId`. Add if a specific query pattern
   needs them.
 
+## Routing rules — campaign-scoped, priority-ordered (Phase 8)
+
+`RoutingRule` is scoped to exactly one campaign (`campaignId`, `NOT NULL`,
+`onDelete: Cascade`) — there is no organization-wide rule. `priority` is a
+plain positive integer made **unique per campaign** by a real database
+constraint (`@@unique([campaignId, priority])`), not application-level
+tie-breaking: two rules on the same campaign can never share a priority,
+so evaluation order (ascending priority) is never ambiguous.
+
+`conditions` is a `Json` column holding a bounded array (max 10) of
+`{ field, operator, value }` objects — validated and bounded at write time
+by `packages/validation/src/routing-rules.ts`, evaluated by the pure
+`evaluateRules` function in `packages/shared/src/routing-rules.ts`. This
+is deliberately a small closed schema, not an arbitrary expression
+language: `field` is one of six enum values, `operator` is one of four,
+and there is no way to encode anything that would need to be `eval`'d.
+
+`action` reuses the same three-value `RoutingRuleAction` type Phase 5's
+`BotTrafficPolicyAction` already established (`TARGET`/`SAFE_PAGE`/
+`BLOCK`) — a rule cannot name an arbitrary redirect URL of its own; see
+`docs/architecture/rules-routing.md` for the full design and why this
+matters for the Google Transparent Click Tracker architecture.
+
+`organizationId`/`campaignId` are set once by the service layer from the
+authenticated URL path (never client-body-supplied) and never updated
+afterward. `enforce_routing_rule_campaign_organization` (migration
+`20260902170000_rules_routing_engine`) enforces both facts at the
+database level as a backstop, mirroring the pattern
+`enforce_conversion_click_attribution` established in Phase 7 — verified
+directly against Postgres before any Phase 8 API code was built on top of
+it.
+
+Indexes: `@@index([campaignId, status, priority])` (the exact shape the
+tracker's own rule-fetch query needs — filter by campaign + `ACTIVE`
+status, sorted by priority) and `@@index([organizationId])` (dashboard/API
+listing and IDOR-check queries).
+
 ## Referral configuration & proof — the approval-gated model
 
 This is the one piece of Phase 1 with real, enforced business logic (not
