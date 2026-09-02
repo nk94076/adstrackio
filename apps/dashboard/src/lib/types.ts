@@ -160,6 +160,36 @@ export interface ClickBreakdownRow {
   uniqueClicksInRange: number;
 }
 
+export type ConversionStatus = "PENDING" | "APPROVED" | "REJECTED" | "REVERSED";
+
+export interface Conversion {
+  id: string;
+  clickId: string;
+  campaignId: string;
+  trackingLinkId: string;
+  eventName: string;
+  status: ConversionStatus;
+  /** Decimal(12,2), serialized as a string by Prisma — null when the
+   * event carries no monetary value (e.g. a signup). */
+  value: string | null;
+  currency: string | null;
+  externalConversionId: string | null;
+  occurredAt: string;
+  createdAt: string;
+}
+
+export interface ConversionSummary {
+  totalConversions: number;
+  pendingConversions: number;
+  approvedConversions: number;
+  rejectedConversions: number;
+  reversedConversions: number;
+  totalConversionValue: number;
+  approvedConversionValue: number;
+  humanClicksInRange: number;
+  conversionRate: number;
+}
+
 export interface AuditLog {
   id: string;
   action: string;

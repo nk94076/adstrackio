@@ -7,6 +7,7 @@ export * from "./bot-detection.js";
 export * from "./bot-traffic-policy.js";
 export * from "./campaign-lifecycle.js";
 export * from "./tracking-link-lifecycle.js";
+export * from "./conversion-lifecycle.js";
 export * from "./ip-hash.js";
 export * from "./user-agent.js";
 export * from "./geo-location.js";

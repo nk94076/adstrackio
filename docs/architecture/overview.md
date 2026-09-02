@@ -2,8 +2,8 @@
 
 ## Status
 
-This document describes AdstrackIO's architecture as of **Phase 6
-(Campaign Manager)**. Phase 1 established the monorepo, data model,
+This document describes AdstrackIO's architecture as of **Phase 7
+(Conversion Tracking)**. Phase 1 established the monorepo, data model,
 authentication, and API foundation; Phase 2 (Domain Manager) added real
 DNS verification and domain activation; Phase 3 added the real tracker
 redirect endpoint; Phase 4 added User-Agent/geo enrichment on `Click` rows
@@ -16,10 +16,14 @@ Campaign/TrackingLink from unguarded CRUD rows into a real control plane —
 an explicit status lifecycle enforced in the backend (not just the
 dashboard), and domain/destination assignment rules that close IDOR and
 "campaign points at a dead domain" gaps Phase 1-5 left open — see
-`docs/architecture/campaign-manager.md`. Later phases (Conversion
-Tracking, Rules & Routing Engine, Affiliate/Partner System, Attribution &
-Advanced Reporting, API + Integrations, Google Certification) build on top
-of what's here, without requiring a rewrite of it.
+`docs/architecture/campaign-manager.md`; Phase 7 added conversion
+reporting, always attributed through a real `Click` (never a
+client-asserted campaign/tracking-link ID), with database-enforced
+deduplication and its own status lifecycle — see
+`docs/architecture/conversion-tracking.md`. Later phases (Rules & Routing
+Engine, Affiliate/Partner System, Attribution & Advanced Reporting, API +
+Integrations, Google Certification) build on top of what's here, without
+requiring a rewrite of it.
 
 Nothing described as "future" or "not implemented" below exists yet. This
 document is written to stay accurate as those phases land — update it as
@@ -190,9 +194,21 @@ session model and the tradeoffs this accepts.
   `TrackingDomain`, and tracking links are managed through campaign-nested
   routes (`/campaigns/:campaignId/tracking-links/...`). See
   `docs/architecture/campaign-manager.md`.
+- **Conversion Tracking (Phase 7)** is implemented — a reported conversion
+  is always attributed through a real `Click` (campaign/tracking-link
+  IDs are derived server-side, never accepted from the client, and
+  enforced immutable/matching by a database trigger), deduplicated via an
+  optional caller-supplied `externalConversionId` under a real unique
+  constraint, and moves through an explicit
+  `PENDING -> APPROVED/REJECTED`, `APPROVED -> REVERSED` status lifecycle
+  enforced in the backend. See
+  `docs/architecture/conversion-tracking.md`.
 - **Campaign routing rules** (Phase 8) are not built — Phase 3/5's Safe
   Page + bot-traffic policy are a single `Campaign.safePageUrl` field and
   two enum fields, not a general routing-rules engine.
-- **Postbacks/webhooks for conversions** (Phase 7) are out of scope so far.
+- **Postbacks/webhooks for conversion status changes** (Phase 11) are out
+  of scope so far — Phase 7 exposes the conversion service functions as a
+  clean boundary for a future API/integrations layer to build on, but no
+  webhook delivery exists yet.
 - **Any Google Transparent Click Tracker certification claim** — see
   `docs/compliance/google-transparent-tracker.md`.
