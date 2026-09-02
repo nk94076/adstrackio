@@ -1,30 +1,53 @@
 /**
- * Architectural boundary for Phase 3 (Transparent Click Tracker).
+ * Architectural boundary for the Transparent Click Tracker (Phase 3).
  *
- * This interface defines how an inbound tracking request (hostname + slug)
- * will eventually be resolved to a Destination and recorded as a Click. It
- * intentionally has NO implementation in Phase 1 — apps/tracker exposes
- * only a health check. Defining the contract now lets apps/api's
- * TrackingLink CRUD and apps/tracker's future redirect engine be built
- * against the same shape without a later rewrite.
+ * Phase 1 originally sketched this interface assuming the resolver would
+ * hand back a backend-configured `destinationUrl` to redirect to. Phase 3
+ * settled on a different, and more literally "transparent", architecture
+ * instead: the immediate next hop is the request's OWN visible
+ * `redirection_url` query parameter (validated by
+ * `validateTransparentRedirectUrl` in transparent-redirect.ts), never a
+ * value resolved from the database. See
+ * docs/compliance/google-transparent-tracker.md for the full rationale.
  *
- * Google Transparent Click Tracker requirement: resolution must be based
- * solely on the tracking link's own configured destination — never on
- * request parameters that could substitute an arbitrary destination.
- * See docs/compliance/google-transparent-tracker.md.
+ * What TrackingResolver is still responsible for: turning
+ * (hostname, slug) into the tracking link's identity and organization
+ * context, and enforcing that only a verified+active domain and an
+ * active link may serve traffic — i.e. authorization/existence, not
+ * destination selection. It intentionally does NOT return a URL to
+ * redirect to.
  */
 export interface TrackingResolutionRequest {
   hostname: string;
   slug: string;
-  userAgent?: string;
-  ipHash?: string;
-  referrer?: string;
 }
 
 export interface TrackingResolutionResult {
   trackingLinkId: string;
   campaignId: string;
-  destinationUrl: string;
+  organizationId: string;
+  /** Server-configured Safe Page for bot/automated traffic on this
+   * campaign, or null if none is configured (see Campaign.safePageUrl). */
+  safePageUrl: string | null;
+}
+
+/** Why resolution failed — lets callers map to the right HTTP response
+ * without parsing error message text. */
+export type TrackingResolutionFailureReason =
+  | "domain_not_found"
+  | "domain_not_verified"
+  | "domain_inactive"
+  | "link_not_found"
+  | "link_inactive";
+
+export class TrackingResolutionError extends Error {
+  constructor(
+    public readonly reason: TrackingResolutionFailureReason,
+    message: string,
+  ) {
+    super(message);
+    this.name = "TrackingResolutionError";
+  }
 }
 
 export interface TrackingResolver {
@@ -34,14 +57,14 @@ export interface TrackingResolver {
 /**
  * Explicit "not implemented yet" stub so the interface can be wired into
  * apps/tracker's dependency graph without pretending the redirect engine
- * works. Throws unconditionally.
+ * works, before a real implementation exists.
  */
 export class NotImplementedTrackingResolver implements TrackingResolver {
   resolve(_request: TrackingResolutionRequest): Promise<TrackingResolutionResult> {
     return Promise.reject(
       new Error(
-        "TrackingResolver is not implemented in Phase 1 (Foundation). " +
-          "It is planned for Phase 3 (Transparent Click Tracker).",
+        "TrackingResolver has no implementation registered. " +
+          "apps/tracker must supply a real resolver (e.g. PrismaTrackingResolver).",
       ),
     );
   }

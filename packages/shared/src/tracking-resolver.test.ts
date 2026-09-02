@@ -6,6 +6,6 @@ describe("NotImplementedTrackingResolver", () => {
     const resolver = new NotImplementedTrackingResolver();
     await expect(
       resolver.resolve({ hostname: "track.example.com", slug: "abc123" }),
-    ).rejects.toThrow(/not implemented/i);
+    ).rejects.toThrow(/no implementation registered/i);
   });
 });
