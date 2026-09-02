@@ -493,15 +493,33 @@ section covers its security-relevant properties specifically.
   `docs/architecture/rules-routing.md#max-active-rules-per-campaign`) when
   rules are created/activated, so an operator gets a clear error instead
   of silently-never-evaluated rules.
-- **The `COUNTRY` condition never trusts a client-controlled header.**
-  Only a small, fixed list of CDN-injected geo headers
-  (`cf-ipcountry`/`x-vercel-ip-country`/`cloudfront-viewer-country`) is
-  read — never a header name an ordinary client request could set to
-  spoof a country signal in an environment where the real CDN header
-  would otherwise be overwritten by the edge network before reaching this
-  service. With no such CDN in front of the tracker (this codebase's own
-  default deployment), no `COUNTRY` condition can ever match — see
-  `docs/architecture/rules-routing.md#country-signal-a-deliberate-limitation`.
+- **The `COUNTRY` condition is gated behind a real, verified trust
+  boundary — not merely the presence of a CDN-shaped header name.** An
+  earlier version of this code treated the mere presence of
+  `cf-ipcountry`/`x-vercel-ip-country`/`cloudfront-viewer-country` as
+  sufficient, which is not a boundary at all: any direct client can set
+  those exact header names on its own request, and validating that the
+  *value* looks like a well-formed 2-letter code proves nothing about who
+  *sent* it (PR #9 review finding, fixed before merge). The actual
+  boundary (`packages/shared/src/routing-signals.ts`'s
+  `isTrustedEdgeRequest`) is a shared secret
+  (`TRUSTED_EDGE_SECRET`, `packages/config`, unset by default): a request
+  is only ever treated as having passed through a trusted edge if it
+  carries that exact value as its `x-adstrackio-edge-secret` header,
+  compared in constant time (SHA-256-digest `timingSafeEqual`, so a
+  length mismatch or byte-by-byte guess can't be inferred from response
+  timing). A geo header is read at all only after that check passes — an
+  attacker who spoofs a geo header, or even spoofs the secret header name
+  with the wrong value, or omits the secret header entirely, gets `null`
+  regardless of how "real" the geo header itself looks. With
+  `TRUSTED_EDGE_SECRET` unset (this codebase's own default), `country` is
+  `null` for every request unconditionally — COUNTRY routing is inert
+  until an operator deliberately configures both this service's secret
+  AND their CDN/edge to inject it. See
+  `docs/architecture/rules-routing.md#country-signal-trust-boundary` for
+  the full mechanism and per-CDN setup, and
+  `packages/shared/src/routing-signals.test.ts` for the spoofing-resistance
+  test suite this claim is backed by.
 - **RBAC mirrors Campaign's own asymmetry.** `VIEWER` reads; `MEMBER`
   creates/updates/deletes; `ADMIN` is required for activate/deactivate —
   a compromised or careless `MEMBER` account can draft/edit rules but

@@ -958,20 +958,126 @@ describe("Rules & Routing Engine (Phase 8)", () => {
     expect(response.headers.location).toBe(target);
   });
 
-  it("a matching COUNTRY rule fires when a known CDN geo header is present", async () => {
-    const fixture = await createTrackerFixture();
-    await createRoutingRule(fixture.organizationId, fixture.campaignId, {
-      action: "BLOCK",
-      conditions: [{ field: "COUNTRY", operator: "EQUALS", value: "US" }],
+  describe("COUNTRY trust boundary (PR #9 review: spoofing resistance)", () => {
+    it("a direct client sending cf-ipcountry cannot make a COUNTRY rule match when no trusted-edge secret is configured", async () => {
+      // Uses the default `app` from beforeEach — buildTrackerApp() with no
+      // trustedEdgeSecret override, i.e. TRUSTED_EDGE_SECRET unset, the
+      // documented fail-closed default.
+      const fixture = await createTrackerFixture();
+      await createRoutingRule(fixture.organizationId, fixture.campaignId, {
+        action: "BLOCK",
+        conditions: [{ field: "COUNTRY", operator: "EQUALS", value: "US" }],
+      });
+
+      const target = "https://example.com/offer";
+      const response = await hit(fixture.hostname, fixture.slug, `?redirection_url=${encodeURIComponent(target)}`, {
+        "cf-ipcountry": "US",
+      });
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe(target);
     });
 
-    const response = await hit(
-      fixture.hostname,
-      fixture.slug,
-      `?redirection_url=${encodeURIComponent("https://example.com/offer")}`,
-      { "cf-ipcountry": "US" },
+    it.each(["cf-ipcountry", "x-vercel-ip-country", "cloudfront-viewer-country"])(
+      "a direct request spoofing %s alone (no secret configured) never matches a COUNTRY rule",
+      async (headerName) => {
+        const fixture = await createTrackerFixture();
+        await createRoutingRule(fixture.organizationId, fixture.campaignId, {
+          action: "BLOCK",
+          conditions: [{ field: "COUNTRY", operator: "EQUALS", value: "US" }],
+        });
+
+        const target = "https://example.com/offer";
+        const response = await hit(fixture.hostname, fixture.slug, `?redirection_url=${encodeURIComponent(target)}`, {
+          [headerName]: "US",
+        });
+        expect(response.statusCode).toBe(302);
+        expect(response.headers.location).toBe(target);
+      },
     );
-    expect(response.statusCode).toBe(404);
+
+    it("a client that spoofs the trusted-edge secret HEADER NAME with the wrong value still cannot make COUNTRY match, even on a deployment that HAS a secret configured", async () => {
+      const secret = "test-trusted-edge-secret-0123456789";
+      const trustedApp = await buildTrackerApp({ env: getEnv(), logger: false, trustedEdgeSecret: secret });
+      try {
+        const fixture = await createTrackerFixture();
+        await createRoutingRule(fixture.organizationId, fixture.campaignId, {
+          action: "BLOCK",
+          conditions: [{ field: "COUNTRY", operator: "EQUALS", value: "US" }],
+        });
+
+        const target = "https://example.com/offer";
+        const response = await trustedApp.inject({
+          method: "GET",
+          url: `/${fixture.slug}?redirection_url=${encodeURIComponent(target)}`,
+          headers: {
+            host: fixture.hostname,
+            "user-agent": HUMAN_UA,
+            ...REALISTIC_BROWSER_HEADERS,
+            "cf-ipcountry": "US",
+            "x-adstrackio-edge-secret": "attacker-does-not-know-the-real-secret",
+          },
+        });
+        expect(response.statusCode).toBe(302);
+        expect(response.headers.location).toBe(target);
+      } finally {
+        await trustedApp.close();
+      }
+    });
+
+    it("a request carrying no secret header at all never matches COUNTRY, even on a deployment that HAS a secret configured", async () => {
+      const secret = "test-trusted-edge-secret-0123456789";
+      const trustedApp = await buildTrackerApp({ env: getEnv(), logger: false, trustedEdgeSecret: secret });
+      try {
+        const fixture = await createTrackerFixture();
+        await createRoutingRule(fixture.organizationId, fixture.campaignId, {
+          action: "BLOCK",
+          conditions: [{ field: "COUNTRY", operator: "EQUALS", value: "US" }],
+        });
+
+        const target = "https://example.com/offer";
+        const response = await trustedApp.inject({
+          method: "GET",
+          url: `/${fixture.slug}?redirection_url=${encodeURIComponent(target)}`,
+          headers: {
+            host: fixture.hostname,
+            "user-agent": HUMAN_UA,
+            ...REALISTIC_BROWSER_HEADERS,
+            "cf-ipcountry": "US",
+          },
+        });
+        expect(response.statusCode).toBe(302);
+        expect(response.headers.location).toBe(target);
+      } finally {
+        await trustedApp.close();
+      }
+    });
+
+    it("a request carrying the exact matching trusted-edge secret DOES let a COUNTRY rule match — the boundary works both ways", async () => {
+      const secret = "test-trusted-edge-secret-0123456789";
+      const trustedApp = await buildTrackerApp({ env: getEnv(), logger: false, trustedEdgeSecret: secret });
+      try {
+        const fixture = await createTrackerFixture();
+        await createRoutingRule(fixture.organizationId, fixture.campaignId, {
+          action: "BLOCK",
+          conditions: [{ field: "COUNTRY", operator: "EQUALS", value: "US" }],
+        });
+
+        const response = await trustedApp.inject({
+          method: "GET",
+          url: `/${fixture.slug}?redirection_url=${encodeURIComponent("https://example.com/offer")}`,
+          headers: {
+            host: fixture.hostname,
+            "user-agent": HUMAN_UA,
+            ...REALISTIC_BROWSER_HEADERS,
+            "cf-ipcountry": "US",
+            "x-adstrackio-edge-secret": secret,
+          },
+        });
+        expect(response.statusCode).toBe(404);
+      } finally {
+        await trustedApp.close();
+      }
+    });
   });
 
   it("BOT traffic is never subject to a routing rule, even one unconditionally matching everything", async () => {

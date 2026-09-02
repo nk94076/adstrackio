@@ -32,6 +32,22 @@ export const envSchema = z.object({
   // derivation from the session-signing secret (e.g. so rotating one
   // doesn't silently change the other's output).
   CLICK_IP_HASH_SALT: z.string().min(16).optional(),
+
+  // Shared secret that a trusted CDN/edge must inject as the
+  // x-adstrackio-edge-secret header before apps/tracker will trust ANY
+  // geo header on a request (cf-ipcountry / x-vercel-ip-country /
+  // cloudfront-viewer-country) for Phase 8 COUNTRY routing-rule
+  // conditions — see packages/shared/src/routing-signals.ts and
+  // docs/architecture/rules-routing.md#country-signal-trust-boundary.
+  // Deliberately optional with no default: unset (the default, matching
+  // NullGeoLocationProvider's own off-by-default precedent) means COUNTRY
+  // never matches for ANY request, geo header present or not — a client
+  // can never make itself trusted by merely sending a geo header. Set
+  // this in production ONLY once your CDN/edge is configured to inject
+  // the matching secret header on every request it forwards to this
+  // service (and to strip/overwrite any client-supplied copy of that
+  // header first) — see the docs link above for exact per-CDN setup.
+  TRUSTED_EDGE_SECRET: z.string().min(16).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;

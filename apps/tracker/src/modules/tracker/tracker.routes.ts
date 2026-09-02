@@ -6,6 +6,7 @@ import {
   extractCountrySignal,
   extractReferrerHost,
   hashIp,
+  isTrustedEdgeRequest,
   resolveRoutingDecision,
   validateTransparentRedirectUrl,
   type BotDetectionEngine,
@@ -25,6 +26,9 @@ export interface TrackerRouteOptions {
   userAgentParser: UserAgentParser;
   geoLocationProvider: GeoLocationProvider;
   ipHashSalt: string;
+  /** See packages/shared/src/routing-signals.ts's module doc — unset
+   * means COUNTRY routing-rule conditions never match for any request. */
+  trustedEdgeSecret: string | undefined;
 }
 
 /**
@@ -185,9 +189,30 @@ export async function registerTrackerRoutes(
     } catch {
       deviceInfo = { deviceType: "UNKNOWN", browser: null, os: null };
     }
+    const requestHeaders = request.headers as Record<string, string | string[] | undefined>;
+
+    // Defense-in-depth observability, not enforcement: extractCountrySignal
+    // below already refuses to read a geo header at all unless
+    // isTrustedEdgeRequest confirms the trusted-edge secret is present and
+    // correct (see packages/shared/src/routing-signals.ts) — this log line
+    // exists purely so an operator can see a request that carried a raw
+    // geo header without ever passing the trust check, which is exactly
+    // what a client attempting to spoof COUNTRY routing would look like.
+    if (!isTrustedEdgeRequest(requestHeaders, options.trustedEdgeSecret)) {
+      const suspiciousGeoHeader = ["cf-ipcountry", "x-vercel-ip-country", "cloudfront-viewer-country"].find(
+        (name) => requestHeaders[name] !== undefined,
+      );
+      if (suspiciousGeoHeader) {
+        request.log.warn(
+          { header: suspiciousGeoHeader },
+          "geo header present on an untrusted request — ignored, possible COUNTRY spoofing attempt",
+        );
+      }
+    }
+
     const routingContext: RoutingContext = {
       botClassification: classification.classification,
-      country: extractCountrySignal(request.headers as Record<string, string | string[] | undefined>),
+      country: extractCountrySignal(requestHeaders, options.trustedEdgeSecret),
       deviceType: classification.classification === "BOT" ? "BOT" : deviceInfo.deviceType,
       browser: deviceInfo.browser,
       os: deviceInfo.os,

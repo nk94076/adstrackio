@@ -190,7 +190,7 @@ reimplementing bot-policy logic — Phase 5's own module doc named this
 function as the intended extension point, and this phase does not
 duplicate bot detection or its routing.
 
-## Country signal: a deliberate limitation
+## Country signal: trust boundary
 
 The Rules & Routing Engine's evaluator must be pure, synchronous, and add
 no latency to the redirect (see "Evaluation engine" below) — but
@@ -199,20 +199,88 @@ no latency to the redirect (see "Evaluation engine" below) — but
 row via a background update, often after the redirect response has
 already been sent. Awaiting it here, even only when a `COUNTRY` rule
 exists, would either violate that latency guarantee or make evaluation
-depend on incomplete data mid-flight.
+depend on incomplete data mid-flight. So `country` has to come from
+something synchronous — and the only synchronous source available is a
+request header, which raises a real question a first version of this
+module got wrong: **an HTTP header is not identity.** Any direct client
+can set `cf-ipcountry: US` on its own request; validating that the
+*value* looks like a well-formed 2-letter code proves nothing about who
+*sent* it. Trusting a geo header's mere presence — this module's original
+implementation — is not a security boundary, it's a spoofable input an
+attacker fully controls, and was rejected as such in PR #9's review.
 
-Instead, `country` is read synchronously from a small, well-known set of
-CDN-injected geo headers (`packages/shared/src/routing-signals.ts`):
-`cf-ipcountry` (Cloudflare), `x-vercel-ip-country` (Vercel),
-`cloudfront-viewer-country` (AWS CloudFront) — checked in that order, the
-first well-formed (2-letter alpha) value used. **This codebase's own
-deployment has no CDN in front of the tracker by default** (mirroring
-`NullGeoLocationProvider` being the default geo provider) — in that
-environment, none of these headers are present, `country` is `null`, and
-any `COUNTRY` condition never matches (fails closed, per the rule above).
-Operators who deploy behind one of these CDNs get real `COUNTRY` rule
-matching for free; everyone else's `COUNTRY` rules are simply inert until
-they do. This is documented here rather than silently discovered.
+### The real boundary: a shared secret, not a header name
+
+`packages/shared/src/routing-signals.ts` now gates `country` extraction
+behind `isTrustedEdgeRequest`, which is true only when the request carries
+the exact value of a server-side-configured secret
+(`TRUSTED_EDGE_SECRET`, `packages/config`) as its
+`x-adstrackio-edge-secret` header, compared in constant time
+(`crypto.timingSafeEqual` over SHA-256 digests of both sides, so the
+comparison always operates on two fixed-length buffers regardless of the
+inputs' own lengths — no early-return timing side channel on a length
+mismatch). Only once that check passes does `extractCountrySignal` even
+look at `cf-ipcountry` / `x-vercel-ip-country` /
+`cloudfront-viewer-country`.
+
+This is real authentication, not "check whether a header exists": a
+client without knowledge of `TRUSTED_EDGE_SECRET` cannot produce a
+matching value for `x-adstrackio-edge-secret`, no matter what other
+headers it sends. It is the same pattern AWS's own documentation
+recommends for restricting an origin to traffic that actually passed
+through CloudFront (a custom secret header CloudFront is configured to
+inject, checked at the origin) — not something invented for this
+codebase.
+
+**`TRUSTED_EDGE_SECRET` is unset by default** (`packages/config`'s schema
+makes it optional, mirroring `NullGeoLocationProvider`'s own
+off-by-default precedent). With it unset, `isTrustedEdgeRequest` is
+`false` for every request and `extractCountrySignal` always returns
+`null` — **COUNTRY routing is completely inert out of the box**, geo
+header present or not. A deploying operator must explicitly do two
+things before any `COUNTRY` condition can ever match:
+
+1. Set `TRUSTED_EDGE_SECRET` to a long random value in this service's own
+   environment.
+2. Configure their CDN/edge to inject that exact value as the
+   `x-adstrackio-edge-secret` request header on every request it forwards
+   to the tracker, AND to strip or overwrite any client-supplied copy of
+   that header first (a CDN that merely *adds* the header without
+   clearing an existing one would let a client's own forged copy survive
+   if the CDN appends rather than replaces — check your specific CDN's
+   header-manipulation semantics).
+
+Per-CDN configuration sketch (exact UI/API details are the operator's own
+CDN's documentation, not this codebase's concern):
+
+- **Cloudflare**: a Transform Rule (Rules → Transform Rules → Modify
+  Request Header) that sets `x-adstrackio-edge-secret` to the configured
+  value on requests routed to the tracker's origin, positioned so it runs
+  on every request regardless of any client-supplied header of the same
+  name.
+- **Vercel**: Edge Middleware that sets the header on the outgoing
+  request to the origin (`NextResponse.next({ request: { headers } })` or
+  equivalent), or a rewrite rule if the deployment topology allows it.
+- **AWS CloudFront**: a CloudFront Function (or Lambda@Edge) on the
+  viewer-request or origin-request event that sets the header before the
+  request reaches the tracker's origin — the same pattern AWS's own
+  "restrict access to your ALB with a custom header" guidance describes.
+
+Operators who complete both steps get real `COUNTRY` rule matching;
+everyone else's `COUNTRY` rules are simply inert until they do. Per
+requirement, this codebase does not implement a partial/fake boundary
+(e.g. "trust it if a CDN-shaped header exists") as a stand-in for actual
+verification — the shared-secret check above is the whole mechanism,
+synchronous and dependency-free (no IP-range lists to fetch or maintain),
+and COUNTRY routing stays disabled until an operator deliberately
+completes it.
+
+See "Security controls" below and `docs/architecture/security.md`'s Rules
+& Routing Engine section for the full threat-model writeup, and
+`packages/shared/src/routing-signals.test.ts` for the spoofing-resistance
+test suite (direct request + each of the three geo headers → null;
+wrong/missing secret + a real geo header → null; matching secret + a
+well-formed geo header → the value).
 
 ## Evaluation engine
 
@@ -337,6 +405,14 @@ Each redirect decision logs `routingAction`, `routingSource`
 alongside the existing bot-classification log line — an operator can see
 exactly why a given request was routed the way it was without guessing.
 
+`tracker.routes.ts` additionally logs a `warn`-level line whenever a
+request carries one of the recognized geo headers but fails the trusted-
+edge check (`isTrustedEdgeRequest`) — this is defense-in-depth
+observability, not enforcement (`extractCountrySignal` already refuses to
+read the header regardless), but it's exactly the shape a client
+attempting to spoof `COUNTRY` routing would produce, so an operator
+monitoring tracker logs can see the attempt.
+
 ## Transparent tracker safety
 
 Nothing about Phase 8 changes how `TARGET`/`SAFE_PAGE`/`BLOCK` are
@@ -371,9 +447,15 @@ UI.
   `MAX_ACTIVE_RULES_PER_CAMPAIGN` bound, and the full BOT_POLICY ->
   ROUTING_RULE -> CAMPAIGN_DEFAULT precedence including the
   zero-rules-is-backward-compatible guarantee.
-- `packages/shared/src/routing-signals.test.ts` (11 tests) — the
-  CDN-header country extractor and referrer-host parser, including
-  malformed-input and never-throws coverage.
+- `packages/shared/src/routing-signals.test.ts` (20 tests) — the
+  trusted-edge secret check and CDN-header country extractor
+  (`isTrustedEdgeRequest`, malformed/absent/wrong/duplicated secret
+  headers, constant-time comparison edge cases) and the referrer-host
+  parser, including the spoofing-resistance suite: a direct request
+  supplying each of the three geo headers with no secret configured
+  resolves to null, a request that guesses the secret header's *name* but
+  not its value still resolves to null, and only an exact secret match
+  lets a well-formed geo header through.
 - `packages/validation/src/routing-rules.test.ts` (35 tests) — schema
   validation, including the per-field value checks (typo'd
   `BOT_CLASSIFICATION`/`DEVICE_TYPE`/`COUNTRY` values rejected) and the
@@ -385,21 +467,29 @@ UI.
   activate/deactivate concurrency suite (duplicate concurrent
   activate+activate, deactivate+deactivate, and conflicting
   activate+deactivate).
-- `apps/tracker/test/tracker.routes.test.ts` — 12 new tests in a
-  dedicated "Rules & Routing Engine (Phase 8)" block: a matching rule
-  overriding the campaign default for each action, the TARGET-stays-
-  transparent safety test above, BOT traffic never being subject to a
-  rule, priority ordering end-to-end, INACTIVE rules never evaluated,
-  cross-campaign isolation, `DEVICE_TYPE`/`REFERRER_HOST`/`COUNTRY`
-  condition matching against real headers, and the resolver-level
-  50-rule bound.
+- `apps/tracker/test/tracker.routes.test.ts` — 18 new tests: a matching
+  rule overriding the campaign default for each action, the
+  TARGET-stays-transparent safety test above, BOT traffic never being
+  subject to a rule, priority ordering end-to-end, INACTIVE rules never
+  evaluated, cross-campaign isolation, `DEVICE_TYPE`/`REFERRER_HOST`
+  condition matching against real headers, the resolver-level 50-rule
+  bound, and a dedicated "COUNTRY trust boundary" block: a direct request
+  spoofing each of the three geo headers with no `TRUSTED_EDGE_SECRET`
+  configured never matches; a request that guesses the secret header's
+  name but supplies the wrong value never matches even on a deployment
+  that HAS a secret configured; a request with no secret header at all
+  never matches; and a request carrying the exact matching secret alongside
+  a well-formed geo header does match end-to-end through the real
+  redirect flow.
 
 ## Known limitations
 
-- `COUNTRY` conditions only match when the tracker sits behind a CDN that
-  injects one of the three recognized geo headers — see "Country signal"
-  above. This is a deliberate, documented trade-off to keep rule
-  evaluation synchronous and latency-free, not a bug.
+- `COUNTRY` conditions only match once an operator has both configured
+  `TRUSTED_EDGE_SECRET` and their CDN/edge to inject it — see "Country
+  signal: trust boundary" above. This is a deliberate, documented,
+  fail-closed default (unset means COUNTRY is always inert), not a bug —
+  and unlike the module's original, rejected design, this is a real
+  verified boundary, not merely "no CDN is present by default."
 - The `MAX_ACTIVE_RULES_PER_CAMPAIGN` budget check has a narrow TOCTOU
   window under concurrent activation of *different* rules — see "Max
   active rules per campaign" above for why this is an accepted,

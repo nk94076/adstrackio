@@ -62,11 +62,15 @@ export interface RoutingCondition {
  *   either violating that latency guarantee or evaluating rules against
  *   stale/absent data. Instead, country is read synchronously from a
  *   well-known CDN-injected header (see extractCountrySignal in
- *   routing-signals.ts). When no such header is present (e.g. no CDN in
- *   front of the tracker, which is the default in this codebase's own
- *   deployment), country is null and any COUNTRY condition simply never
- *   matches — see docs/architecture/rules-routing.md#country-signal for
- *   the full rationale and this known limitation.
+ *   routing-signals.ts) — but ONLY on a request verified to have passed
+ *   through a trusted edge (isTrustedEdgeRequest, gated on the
+ *   TRUSTED_EDGE_SECRET server config): a geo header's mere presence is
+ *   not a security boundary, since an ordinary client can set it on its
+ *   own request. With no trusted edge configured (the default), or on any
+ *   request that doesn't prove it passed through one, country is null and
+ *   any COUNTRY condition simply never matches — see
+ *   docs/architecture/rules-routing.md#country-signal-trust-boundary for
+ *   the full mechanism and per-CDN setup.
  * - referrerHost: parsed synchronously from the Referer header.
  *
  * A null field value means "this signal is unknown for this request", not
