@@ -3,7 +3,10 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "@adstrackio/database";
 import { buildTestApp, registerAccount } from "./helpers.js";
 import { resetDatabase } from "./db-reset.js";
-import { verifyTrackingDomain } from "../src/modules/domains/domains.service.js";
+import {
+  VERIFICATION_RETRY_COOLDOWN_MS,
+  verifyTrackingDomain,
+} from "../src/modules/domains/domains.service.js";
 
 /**
  * Phase 2 (Domain Manager) coverage. Basic creation/duplicate/invalid-hostname
@@ -185,6 +188,9 @@ describe("domain manager: real server-side DNS verification", () => {
     expect(verified.verificationStatus).toBe("FAILED");
     expect(verified.verifiedAt).toBeNull();
 
+    const record = await prisma.trackingDomain.findUniqueOrThrow({ where: { id: domain.id } });
+    expect(record.verificationRequestedAt).not.toBeNull();
+
     const auditLogs = (
       await app.inject({
         method: "GET",
@@ -296,6 +302,115 @@ describe("domain manager: real server-side DNS verification", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json().domain.verificationStatus).toBe("FAILED");
+  });
+});
+
+describe("domain manager: verification retry/regeneration semantics", () => {
+  it("rejects an immediate re-verification attempt with 429, leaving status/token untouched", async () => {
+    const { cookie, organizationId } = await setupOrg("retry-cooldown");
+    const domain = (
+      await createDomain(cookie, organizationId, "retry-cooldown.example.com")
+    ).json().domain;
+
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/v1/organizations/${organizationId}/domains/${domain.id}/verify`,
+      headers: { cookie },
+    });
+    expect(first.statusCode).toBe(200);
+    const afterFirst = await prisma.trackingDomain.findUniqueOrThrow({
+      where: { id: domain.id },
+    });
+
+    const second = await app.inject({
+      method: "POST",
+      url: `/api/v1/organizations/${organizationId}/domains/${domain.id}/verify`,
+      headers: { cookie },
+    });
+    expect(second.statusCode).toBe(429);
+    expect(second.json().error.code).toBe("RATE_LIMITED");
+
+    const afterSecond = await prisma.trackingDomain.findUniqueOrThrow({
+      where: { id: domain.id },
+    });
+    // The rejected retry must not have touched status, token, or the
+    // requested-at clock it was rejected because of.
+    expect(afterSecond.verificationStatus).toBe(afterFirst.verificationStatus);
+    expect(afterSecond.verificationToken).toBe(afterFirst.verificationToken);
+    expect(afterSecond.verificationRequestedAt?.getTime()).toBe(
+      afterFirst.verificationRequestedAt?.getTime(),
+    );
+  });
+
+  it("allows a retry once the cooldown has elapsed, without rotating the token", async () => {
+    const { cookie, organizationId } = await setupOrg("retry-after-cooldown");
+    const domain = (
+      await createDomain(cookie, organizationId, "retry-after-cooldown.example.com")
+    ).json().domain;
+
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/v1/organizations/${organizationId}/domains/${domain.id}/verify`,
+      headers: { cookie },
+    });
+    expect(first.statusCode).toBe(200);
+    const afterFirst = await prisma.trackingDomain.findUniqueOrThrow({
+      where: { id: domain.id },
+    });
+
+    // Simulate the cooldown having elapsed rather than sleeping in the test.
+    await prisma.trackingDomain.update({
+      where: { id: domain.id },
+      data: {
+        verificationRequestedAt: new Date(Date.now() - VERIFICATION_RETRY_COOLDOWN_MS - 1000),
+      },
+    });
+
+    const second = await app.inject({
+      method: "POST",
+      url: `/api/v1/organizations/${organizationId}/domains/${domain.id}/verify`,
+      headers: { cookie },
+    });
+    expect(second.statusCode).toBe(200);
+
+    const afterSecond = await prisma.trackingDomain.findUniqueOrThrow({
+      where: { id: domain.id },
+    });
+    // Retrying re-runs the DNS check (requestedAt moves forward) but must
+    // reuse the same token — regenerating it would invalidate a DNS TXT
+    // record the customer may have just published for the original value.
+    expect(afterSecond.verificationToken).toBe(afterFirst.verificationToken);
+    expect(afterSecond.verificationRequestedAt?.getTime()).toBeGreaterThan(
+      afterFirst.verificationRequestedAt!.getTime(),
+    );
+  });
+
+  it("never regenerates the token across repeated failed verification attempts", async () => {
+    const { cookie, organizationId, userId } = await setupOrg("no-token-rotation");
+    const domain = (
+      await createDomain(cookie, organizationId, "no-token-rotation.example.com")
+    ).json().domain;
+    const originalToken = (
+      await prisma.trackingDomain.findUniqueOrThrow({ where: { id: domain.id } })
+    ).verificationToken;
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      // Back-date the cooldown clock between attempts rather than sleeping,
+      // so this test exercises repeated failures instead of the cooldown.
+      await prisma.trackingDomain.update({
+        where: { id: domain.id },
+        data: {
+          verificationRequestedAt: new Date(Date.now() - VERIFICATION_RETRY_COOLDOWN_MS - 1000),
+        },
+      });
+      await verifyTrackingDomain(prisma, userId, organizationId, domain.id, async () => []);
+    }
+
+    const finalRecord = await prisma.trackingDomain.findUniqueOrThrow({
+      where: { id: domain.id },
+    });
+    expect(finalRecord.verificationStatus).toBe("FAILED");
+    expect(finalRecord.verificationToken).toBe(originalToken);
   });
 });
 

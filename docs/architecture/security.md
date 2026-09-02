@@ -111,6 +111,32 @@ request field a client can set to force `verified: true` or
 even parse a request body. The DNS check is a lookup only, never an HTTP
 fetch to a client-influenced URL, so it carries no SSRF risk.
 
+**Verification token lifecycle.** The token is generated once, at domain
+creation, and is never rotated by a retry: `verifyTrackingDomain` reuses
+`domain.verificationToken` on every subsequent call rather than generating
+a fresh one, because regenerating it on retry would invalidate whatever DNS
+TXT record the customer just published for the original value — a token
+should only ever change if the domain itself does (a new domain, a new
+token). `verificationRequestedAt` is stamped on every attempt and doubles
+as a per-domain retry cooldown (`VERIFICATION_RETRY_COOLDOWN_MS`, currently
+10s): calling `/verify` again before the cooldown elapses returns `429
+RATE_LIMITED` without touching status or token. This exists to stop the
+endpoint from being hammered — each call performs a real DNS lookup and
+writes two audit log entries — not for any correctness reason. See
+`apps/api/test/domains-lifecycle.test.ts` ("verification retry/regeneration
+semantics") for the tests pinning this down.
+
+The raw token itself is not treated as a secret in the sense of "must never
+be disclosed to its own organization" (it's designed to be published in
+public DNS), but it is kept out of every API response except wrapped inside
+`verificationInstructions.recordValue`, and out of audit log metadata
+entirely (only `hostname` is recorded). It is also an explicit entry in
+`packages/logger`'s redaction list (`verificationToken`) — necessary
+because pino/fast-redact paths match an exact property name per segment,
+so the existing `"token"` entry does **not** catch a field named
+`verificationToken`; a field like this needs its own explicit entry rather
+than assuming a broader existing one covers it.
+
 ## Input validation
 
 Every mutating endpoint validates its body with a Zod schema from

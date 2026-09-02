@@ -10,6 +10,17 @@ import {
   type TxtResolver,
 } from "./dns-verification.js";
 
+/**
+ * Minimum time between verification attempts on the same domain. Each
+ * attempt performs a real DNS lookup and writes two audit log entries, so
+ * this exists to stop a member from hammering the endpoint (accidental
+ * retry loops in a script, or a deliberate attempt to use it as a DNS
+ * lookup oracle) rather than for any correctness reason. Kept short enough
+ * that a legitimate "I just fixed my DNS record" retry never has to wait
+ * long.
+ */
+export const VERIFICATION_RETRY_COOLDOWN_MS = 10_000;
+
 function normalizeOrThrow(hostname: string): string {
   try {
     return normalizeTrackingHostname(hostname);
@@ -101,6 +112,15 @@ export async function getTrackingDomain(
  * a client-supplied "verified" flag — the only way `verificationStatus`
  * becomes VERIFIED is a successful lookup performed right here.
  *
+ * Token lifecycle: the token generated at creation time is reused across
+ * every retry rather than rotated per attempt — regenerating it on each
+ * call would invalidate the DNS record the customer just published,
+ * turning "retry after fixing DNS" into an impossible moving target. A
+ * fresh token is only ever generated in the defensive fallback below (a
+ * pre-migration row with no token), never as part of normal retry flow.
+ * `verificationRequestedAt` is stamped on every attempt (success or
+ * failure) and doubles as the retry-cooldown clock below.
+ *
  * Once a domain is ACTIVE, the database's `isActive => VERIFIED` invariant
  * means it must stay VERIFIED; re-running verification on an active domain
  * is a safe no-op rather than something that could flip it to FAILED and
@@ -119,7 +139,18 @@ export async function verifyTrackingDomain(
     return domain;
   }
 
+  if (domain.verificationRequestedAt) {
+    const elapsedMs = Date.now() - domain.verificationRequestedAt.getTime();
+    if (elapsedMs < VERIFICATION_RETRY_COOLDOWN_MS) {
+      const retryInSeconds = Math.ceil((VERIFICATION_RETRY_COOLDOWN_MS - elapsedMs) / 1000);
+      throw ApiError.rateLimited(
+        `Verification was already attempted recently for this domain; retry in ${retryInSeconds}s`,
+      );
+    }
+  }
+
   const token = domain.verificationToken ?? generateVerificationToken();
+  const requestedAt = new Date();
 
   return prisma.$transaction(async (tx) => {
     await writeAuditLog(tx, {
@@ -137,6 +168,7 @@ export async function verifyTrackingDomain(
       where: { id: domainId },
       data: {
         verificationToken: token,
+        verificationRequestedAt: requestedAt,
         verificationStatus: verified ? "VERIFIED" : "FAILED",
         verifiedAt: verified ? new Date() : null,
       },
