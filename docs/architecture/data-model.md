@@ -6,21 +6,27 @@ types, defaults, and indexes.
 
 ## Entity overview
 
+Status legend: **IMPLEMENTED** — working end-to-end, covered by tests, safe
+to build on as-is. **FOUNDATION ONLY** — the schema/model exists and is
+deliberately shaped for what comes later, but the behavior that would make
+it "live" isn't built yet. **FUTURE PHASE** — not started; named here only
+so the roadmap this schema was designed against is explicit.
+
 | Model | Purpose | Phase 1 status |
 | --- | --- | --- |
-| `User` | An individual account (email + password hash) | Fully functional |
-| `Organization` | A workspace/tenant | Fully functional |
-| `OrganizationMember` | Join table: user ↔ organization, with a role | Fully functional |
-| `TrackingDomain` | A hostname an organization tracks clicks on | Foundation — no real DNS verification yet |
-| `Destination` | The business URL a campaign/link points to | Fully functional (CRUD + URL validation) |
-| `Campaign` | Groups tracking links under a name/status/budget | Foundation — no routing logic yet |
-| `TrackingLink` | A routable slug on a domain, pointing at a destination | Foundation — no live redirect yet |
-| `Click` | An individual inbound tracking event | Schema only — nothing writes to this table yet |
-| `Conversion` | A recorded conversion event | Schema only — no postback ingestion yet |
-| `BotEvent` | A bot-detection verdict for a click | Schema only — no detection engine wired in yet |
-| `ReferralConfiguration` | How referral/attribution is labeled for a campaign | Fully functional, including the approval gate |
-| `ReferralProof` | Evidence supporting a custom partner attribution config | Fully functional |
-| `AuditLog` | Append-only record of administrative actions | Fully functional |
+| `User` | An individual account (email + password hash) | IMPLEMENTED |
+| `Organization` | A workspace/tenant | IMPLEMENTED |
+| `OrganizationMember` | Join table: user ↔ organization, with a role | IMPLEMENTED |
+| `TrackingDomain` | A hostname an organization tracks clicks on | FOUNDATION ONLY — no real DNS verification (FUTURE PHASE: Domain Manager) |
+| `Destination` | The business URL a campaign/link points to | IMPLEMENTED (CRUD + URL validation) |
+| `Campaign` | Groups tracking links under a name/status/budget | FOUNDATION ONLY — no routing logic (FUTURE PHASE: Rules & Routing Engine) |
+| `TrackingLink` | A routable slug on a domain, pointing at a destination | FOUNDATION ONLY — no live redirect (FUTURE PHASE: Transparent Click Tracker) |
+| `Click` | An individual inbound tracking event | FOUNDATION ONLY — schema only, nothing writes to this table yet (FUTURE PHASE: Transparent Click Tracker / Click Analytics) |
+| `Conversion` | A recorded conversion event | FOUNDATION ONLY — schema only, no postback ingestion (FUTURE PHASE: Conversion Tracking) |
+| `BotEvent` | A bot-detection verdict for a click | FOUNDATION ONLY — schema + integration boundary only, no detection engine wired in (FUTURE PHASE: Bot Detection Integration) |
+| `ReferralConfiguration` | How referral/attribution is labeled for a campaign | IMPLEMENTED, including the approval gate (app + database level) |
+| `ReferralProof` | Evidence supporting a custom partner attribution config | IMPLEMENTED |
+| `AuditLog` | Append-only record of administrative actions | IMPLEMENTED |
 
 ## Identity & organizations
 
@@ -95,7 +101,35 @@ without AdstrackIO needing its own competing detection logic.
 a real-world conversion pipeline needs to handle conversions that arrive
 without a cleanly matched click (e.g. view-through, delayed postbacks) —
 Phase 7 will build the actual ingestion; Phase 1 only ensures the schema
-doesn't have to change shape to support that later.
+doesn't have to change shape to support that later. Both are indexed
+(`conversions_trackingLinkId_idx`, `conversions_clickId_idx`) since "did
+this click convert" / "conversions for this link" are core attribution
+lookups — Postgres doesn't auto-index foreign key columns, and Phase 1
+CTO review found these two missing.
+
+### Flagged for the phase that starts writing to these tables (not fixed now)
+
+Reviewed for what could become a problem at real click volume, once Phase
+3/4 start inserting rows here — none of this blocks Phase 1, since nothing
+writes to `Click`/`BotEvent`/`Conversion` yet, but it should inform that
+work rather than being rediscovered under load:
+
+- **Primary key strategy.** `Click`/`BotEvent` use the same `cuid()` text
+  primary key as every other model for consistency. At sustained
+  high-volume insert rates, a purely time-ordered key (e.g. UUIDv7/ULID,
+  or a `bigint` identity column) indexes and partitions more efficiently
+  than `cuid()`'s ordering. Worth an explicit decision — not necessarily a
+  change — when Phase 3/4 design real ingestion.
+- **No table partitioning.** A single unpartitioned `clicks` table will
+  eventually need time-based partitioning (e.g. monthly) for both write
+  throughput and the ability to cheaply drop/archive old data. Standard
+  practice at scale, deliberately not built ahead of real volume.
+- **Other foreign keys without an index**, lower priority than the two
+  fixed above because they sit on control-plane tables bounded by org
+  size, not click volume: `Campaign.trackingDomainId`,
+  `Campaign.destinationId`, `TrackingLink.destinationId`,
+  `ReferralConfiguration.campaignId`. Add if a specific query pattern
+  needs them.
 
 ## Referral configuration & proof — the approval-gated model
 
@@ -115,11 +149,16 @@ just a foundation schema):
 - For `CUSTOM_PARTNER_ATTRIBUTION`, activation is blocked until at least
   one linked `ReferralProof` has `reviewStatus = APPROVED`. This is
   enforced in `apps/api/src/modules/referrals/referral-configurations.service.ts`
-  (`activateReferralConfiguration`), not just in the dashboard UI — see
-  `docs/architecture/security.md` for why that placement matters, and
+  (`activateReferralConfiguration`), not just in the dashboard UI, **and**
+  backed by a Postgres trigger
+  (`enforce_referral_configuration_activation`, migration
+  `20260901204759_enforce_referral_activation_gate`) that rejects the same
+  transition even for a write that bypasses the API entirely — see
+  `docs/architecture/security.md` for why both layers exist, and
   `apps/api/test/referral-workflow.test.ts` for the tests that pin this
   behavior down (including: rejected proof still blocks activation; a
-  second, approved proof unblocks it).
+  second, approved proof unblocks it; a raw SQL `UPDATE` is rejected by the
+  trigger until an approved proof exists).
 - `ReferralProof` carries `documentReference` and/or `evidenceUrl`
   (external evidence), `submittedBy`, and a review trail (`reviewStatus`,
   `reviewedBy`, `reviewedAt`, `rejectionReason`). Review requires the

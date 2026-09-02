@@ -72,13 +72,17 @@ export async function reviewReferralProof(
   if (!proof) {
     throw ApiError.notFound("Referral proof not found");
   }
-  if (proof.reviewStatus === "APPROVED" || proof.reviewStatus === "REJECTED") {
-    throw ApiError.conflict("This proof has already been reviewed");
-  }
 
   return prisma.$transaction(async (tx) => {
-    const updated = await tx.referralProof.update({
-      where: { id: proofId },
+    // The PENDING check is folded into the UPDATE's WHERE clause (rather
+    // than only checked beforehand) so the read-then-write isn't a
+    // race: Postgres row-locks the matching row for the duration of this
+    // statement, so two concurrent reviews of the same proof (e.g. one
+    // APPROVE, one REJECT submitted by two admins at once) can't both
+    // "win" — the second one's WHERE no longer matches once the first
+    // commits, and updateCount comes back 0.
+    const { count: updateCount } = await tx.referralProof.updateMany({
+      where: { id: proofId, reviewStatus: "PENDING" },
       data: {
         reviewStatus: input.decision,
         reviewedById: actorUserId,
@@ -86,6 +90,10 @@ export async function reviewReferralProof(
         rejectionReason: input.decision === "REJECTED" ? input.rejectionReason : null,
       },
     });
+
+    if (updateCount === 0) {
+      throw ApiError.conflict("This proof has already been reviewed");
+    }
 
     await writeAuditLog(tx, {
       organizationId,
@@ -97,6 +105,6 @@ export async function reviewReferralProof(
       metadata: { referralConfigurationId: configurationId },
     });
 
-    return updated;
+    return tx.referralProof.findUniqueOrThrow({ where: { id: proofId } });
   });
 }

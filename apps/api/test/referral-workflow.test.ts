@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { prisma } from "@adstrackio/database";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { buildTestApp, registerAccount } from "./helpers.js";
 import { resetDatabase } from "./db-reset.js";
@@ -209,5 +210,173 @@ describe("referral configuration + proof workflow", () => {
     });
 
     expect(response.statusCode).toBe(403);
+  });
+
+  it("is enforced at the database level, not just the service layer: a raw SQL UPDATE bypassing the API cannot activate an unapproved CUSTOM_PARTNER_ATTRIBUTION configuration", async () => {
+    const { cookie, organizationId } = await setupOrg();
+
+    const config = (
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/referral-configurations`,
+        headers: { cookie },
+        payload: { type: "CUSTOM_PARTNER_ATTRIBUTION", customReferrerValue: "partner-db-level" },
+      })
+    ).json().referralConfiguration;
+
+    // No proof submitted at all: attempt to flip status directly via SQL,
+    // completely bypassing apps/api. This proves the invariant is backed by
+    // a database trigger (packages/database/prisma/migrations/
+    // 20260901204759_enforce_referral_activation_gate), not only by
+    // application code that a future caller could route around.
+    await expect(
+      prisma.$executeRawUnsafe(
+        `UPDATE "referral_configurations" SET status = 'ACTIVE' WHERE id = $1`,
+        config.id,
+      ),
+    ).rejects.toThrow(/cannot be ACTIVE without an APPROVED referral_proof/);
+
+    const unchanged = await prisma.referralConfiguration.findUniqueOrThrow({
+      where: { id: config.id },
+    });
+    expect(unchanged.status).toBe("INACTIVE");
+  });
+
+  it("database trigger allows activation via raw SQL once an APPROVED proof exists", async () => {
+    const { cookie, organizationId } = await setupOrg();
+
+    const config = (
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/referral-configurations`,
+        headers: { cookie },
+        payload: { type: "CUSTOM_PARTNER_ATTRIBUTION", customReferrerValue: "partner-db-level-2" },
+      })
+    ).json().referralConfiguration;
+
+    const proof = (
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/referral-configurations/${config.id}/proofs`,
+        headers: { cookie },
+        payload: { evidenceUrl: "https://example.com/db-level-proof.pdf" },
+      })
+    ).json().proof;
+
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/organizations/${organizationId}/referral-configurations/${config.id}/proofs/${proof.id}/review`,
+      headers: { cookie },
+      payload: { decision: "APPROVED" },
+    });
+
+    await expect(
+      prisma.$executeRawUnsafe(
+        `UPDATE "referral_configurations" SET status = 'ACTIVE' WHERE id = $1`,
+        config.id,
+      ),
+    ).resolves.toBeDefined();
+
+    const updated = await prisma.referralConfiguration.findUniqueOrThrow({
+      where: { id: config.id },
+    });
+    expect(updated.status).toBe("ACTIVE");
+  });
+
+  it("does not let two concurrent reviews of the same proof both succeed (no split-brain APPROVED+REJECTED)", async () => {
+    const { cookie, organizationId } = await setupOrg();
+
+    const config = (
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/referral-configurations`,
+        headers: { cookie },
+        payload: { type: "CUSTOM_PARTNER_ATTRIBUTION", customReferrerValue: "partner-race" },
+      })
+    ).json().referralConfiguration;
+
+    const proof = (
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/referral-configurations/${config.id}/proofs`,
+        headers: { cookie },
+        payload: { evidenceUrl: "https://example.com/race-proof.pdf" },
+      })
+    ).json().proof;
+
+    // Fire an APPROVE and a REJECT at the same proof simultaneously. Before
+    // the fix (a separate read-check followed by an unconditional update),
+    // both could observe reviewStatus=PENDING and both would "succeed",
+    // silently overwriting one decision with the other. The fix folds the
+    // PENDING check into the UPDATE's WHERE clause so Postgres's row lock
+    // makes the two requests mutually exclusive: exactly one must win.
+    const [approveResponse, rejectResponse] = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/referral-configurations/${config.id}/proofs/${proof.id}/review`,
+        headers: { cookie },
+        payload: { decision: "APPROVED" },
+      }),
+      app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/referral-configurations/${config.id}/proofs/${proof.id}/review`,
+        headers: { cookie },
+        payload: { decision: "REJECTED", rejectionReason: "racing with an approval" },
+      }),
+    ]);
+
+    const statuses = [approveResponse.statusCode, rejectResponse.statusCode].sort();
+    expect(statuses).toEqual([200, 409]);
+
+    const finalProof = await prisma.referralProof.findUniqueOrThrow({ where: { id: proof.id } });
+    // Whichever request actually committed first wins; what matters is
+    // there's no split state and the loser was told it lost.
+    expect(["APPROVED", "REJECTED"]).toContain(finalProof.reviewStatus);
+    if (approveResponse.statusCode === 200) {
+      expect(finalProof.reviewStatus).toBe("APPROVED");
+    } else {
+      expect(finalProof.reviewStatus).toBe("REJECTED");
+    }
+  });
+
+  it("rejects a second review attempt after a proof has already been decided", async () => {
+    const { cookie, organizationId } = await setupOrg();
+
+    const config = (
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/referral-configurations`,
+        headers: { cookie },
+        payload: { type: "CUSTOM_PARTNER_ATTRIBUTION", customReferrerValue: "partner-double" },
+      })
+    ).json().referralConfiguration;
+
+    const proof = (
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/referral-configurations/${config.id}/proofs`,
+        headers: { cookie },
+        payload: { evidenceUrl: "https://example.com/double-review.pdf" },
+      })
+    ).json().proof;
+
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/v1/organizations/${organizationId}/referral-configurations/${config.id}/proofs/${proof.id}/review`,
+      headers: { cookie },
+      payload: { decision: "APPROVED" },
+    });
+    expect(first.statusCode).toBe(200);
+
+    const second = await app.inject({
+      method: "POST",
+      url: `/api/v1/organizations/${organizationId}/referral-configurations/${config.id}/proofs/${proof.id}/review`,
+      headers: { cookie },
+      payload: { decision: "REJECTED", rejectionReason: "too late" },
+    });
+    expect(second.statusCode).toBe(409);
+
+    const finalProof = await prisma.referralProof.findUniqueOrThrow({ where: { id: proof.id } });
+    expect(finalProof.reviewStatus).toBe("APPROVED");
   });
 });

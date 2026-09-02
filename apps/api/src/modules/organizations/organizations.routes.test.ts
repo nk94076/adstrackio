@@ -123,6 +123,101 @@ describe("organizations", () => {
     expect(response.statusCode).toBe(409);
   });
 
+  describe("OWNER role privilege escalation guards", () => {
+    async function setupOrgWithAdmin() {
+      const owner = await registerAccount(app, {
+        email: "owner-esc@example.com",
+        organizationName: "Escalation Org",
+      });
+      const admin = await registerAccount(app, { email: "admin-esc@example.com" });
+      const organizationId = owner.organizationId!;
+
+      const addResponse = await app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/members`,
+        headers: { cookie: owner.cookie },
+        payload: { email: admin.email, role: "ADMIN" },
+      });
+      const adminMembershipId = addResponse.json().membership.id;
+
+      const membersResponse = await app.inject({
+        method: "GET",
+        url: `/api/v1/organizations/${organizationId}/members`,
+        headers: { cookie: owner.cookie },
+      });
+      const ownerMembershipId = membersResponse
+        .json()
+        .members.find((m: { role: string }) => m.role === "OWNER").id;
+
+      return { owner, admin, organizationId, adminMembershipId, ownerMembershipId };
+    }
+
+    it("blocks an ADMIN from promoting themselves to OWNER", async () => {
+      const { admin, organizationId, adminMembershipId } = await setupOrgWithAdmin();
+
+      const response = await app.inject({
+        method: "PATCH",
+        url: `/api/v1/organizations/${organizationId}/members/${adminMembershipId}`,
+        headers: { cookie: admin.cookie },
+        payload: { role: "OWNER" },
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it("blocks an ADMIN from adding a new member directly as OWNER", async () => {
+      const { admin, organizationId } = await setupOrgWithAdmin();
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/members`,
+        headers: { cookie: admin.cookie },
+        payload: { email: "outsider@example.com", role: "OWNER" },
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it("blocks an ADMIN from demoting the real OWNER", async () => {
+      const { admin, organizationId, ownerMembershipId } = await setupOrgWithAdmin();
+
+      const response = await app.inject({
+        method: "PATCH",
+        url: `/api/v1/organizations/${organizationId}/members/${ownerMembershipId}`,
+        headers: { cookie: admin.cookie },
+        payload: { role: "VIEWER" },
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it("blocks an ADMIN from removing the real OWNER", async () => {
+      const { admin, organizationId, ownerMembershipId } = await setupOrgWithAdmin();
+
+      const response = await app.inject({
+        method: "DELETE",
+        url: `/api/v1/organizations/${organizationId}/members/${ownerMembershipId}`,
+        headers: { cookie: admin.cookie },
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it("still lets a real OWNER grant OWNER to someone else", async () => {
+      const { owner, organizationId, adminMembershipId } = await setupOrgWithAdmin();
+
+      const response = await app.inject({
+        method: "PATCH",
+        url: `/api/v1/organizations/${organizationId}/members/${adminMembershipId}`,
+        headers: { cookie: owner.cookie },
+        payload: { role: "OWNER" },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().membership.role).toBe("OWNER");
+    });
+  });
+
   it("records audit log entries for organization creation and membership changes", async () => {
     const owner = await registerAccount(app, {
       email: "audit-owner@example.com",

@@ -4,7 +4,20 @@ import { createSessionToken, SESSION_COOKIE_NAME, SESSION_TTL_SECONDS } from "@a
 import { loginSchema, registerSchema } from "@adstrackio/validation";
 import { authenticateUser, registerUser } from "./auth.service.js";
 
-const AUTH_RATE_LIMIT = { max: 10, timeWindow: "1 minute" };
+/**
+ * Rate limiting is a production defense against credential stuffing and
+ * brute force. In tests every request comes from the same simulated
+ * client (Fastify's `inject()` has no real per-request IP), so a single
+ * test file registering more than ~10 accounts would otherwise trip the
+ * production limit and fail for reasons unrelated to what it's testing.
+ * The limiter itself is covered by manual/integration verification against
+ * a running server, not by the application test suite.
+ */
+function authRateLimit(env: Env) {
+  return env.NODE_ENV === "test"
+    ? { max: 1000, timeWindow: "1 minute" }
+    : { max: 10, timeWindow: "1 minute" };
+}
 
 async function issueSession(
   reply: FastifyReply,
@@ -29,7 +42,7 @@ async function issueSession(
 export async function registerAuthRoutes(fastify: FastifyInstance, opts: { env: Env }) {
   fastify.post(
     "/auth/register",
-    { config: { rateLimit: AUTH_RATE_LIMIT } },
+    { config: { rateLimit: authRateLimit(opts.env) } },
     async (request, reply) => {
       const input = registerSchema.parse(request.body);
       const { user, organizationId } = await registerUser(fastify.prisma, input);
@@ -43,7 +56,7 @@ export async function registerAuthRoutes(fastify: FastifyInstance, opts: { env: 
 
   fastify.post(
     "/auth/login",
-    { config: { rateLimit: AUTH_RATE_LIMIT } },
+    { config: { rateLimit: authRateLimit(opts.env) } },
     async (request, reply) => {
       const input = loginSchema.parse(request.body);
       const user = await authenticateUser(fastify.prisma, input);

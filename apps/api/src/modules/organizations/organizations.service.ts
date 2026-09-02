@@ -60,12 +60,31 @@ export async function listOrganizationsForUser(prisma: PrismaClient, userId: str
   });
 }
 
+/**
+ * OWNER is the top of the role hierarchy and must not be grantable or
+ * revocable by anyone below it. Without this guard, an ADMIN (who only
+ * needs ADMIN to call the member-management routes) could self-promote to
+ * OWNER, hand OWNER to an outside account, or demote/remove the real
+ * OWNER — a straightforward privilege escalation. Every function that can
+ * touch the OWNER role must call this first.
+ */
+function assertActorCanManageOwnerRole(actorRole: OrganizationRole) {
+  if (actorRole !== "OWNER") {
+    throw ApiError.forbidden("Only an OWNER can grant, change, or remove the OWNER role");
+  }
+}
+
 export async function addMember(
   prisma: PrismaClient,
   actorUserId: string,
+  actorRole: OrganizationRole,
   organizationId: string,
   input: InviteMemberInput,
 ) {
+  if (input.role === "OWNER") {
+    assertActorCanManageOwnerRole(actorRole);
+  }
+
   const user = await prisma.user.findUnique({ where: { email: input.email } });
   if (!user) {
     throw ApiError.notFound(
@@ -109,6 +128,7 @@ async function countOwners(
 export async function updateMemberRole(
   prisma: PrismaClient,
   actorUserId: string,
+  actorRole: OrganizationRole,
   organizationId: string,
   memberId: string,
   role: OrganizationRole,
@@ -118,6 +138,10 @@ export async function updateMemberRole(
   });
   if (!membership) {
     throw ApiError.notFound("Membership not found");
+  }
+
+  if (membership.role === "OWNER" || role === "OWNER") {
+    assertActorCanManageOwnerRole(actorRole);
   }
 
   if (membership.role === "OWNER" && role !== "OWNER") {
@@ -149,6 +173,7 @@ export async function updateMemberRole(
 export async function removeMember(
   prisma: PrismaClient,
   actorUserId: string,
+  actorRole: OrganizationRole,
   organizationId: string,
   memberId: string,
 ) {
@@ -160,6 +185,8 @@ export async function removeMember(
   }
 
   if (membership.role === "OWNER") {
+    assertActorCanManageOwnerRole(actorRole);
+
     const owners = await countOwners(prisma, organizationId);
     if (owners <= 1) {
       throw ApiError.conflict("An organization must always have at least one OWNER");
