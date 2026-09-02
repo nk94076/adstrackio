@@ -2,8 +2,15 @@ import Fastify, { type FastifyInstance } from "fastify";
 import type { Env } from "@adstrackio/config";
 import { prisma } from "@adstrackio/database";
 import { REDACT_PATHS } from "@adstrackio/logger";
-import type { BotDetectionEngine, TrackingResolver } from "@adstrackio/shared";
+import {
+  NullGeoLocationProvider,
+  type BotDetectionEngine,
+  type GeoLocationProvider,
+  type TrackingResolver,
+  type UserAgentParser,
+} from "@adstrackio/shared";
 import { HeuristicBotDetectionEngine } from "./modules/bot-detection/heuristic-bot-detection-engine.js";
+import { UaParserUserAgentParser } from "./modules/enrichment/ua-parser-user-agent-parser.js";
 import { PrismaTrackingResolver } from "./modules/tracker/prisma-tracking-resolver.js";
 import { registerTrackerRoutes } from "./modules/tracker/tracker.routes.js";
 import { errorHandlerPlugin } from "./plugins/error-handler.js";
@@ -15,6 +22,8 @@ export interface BuildTrackerAppOptions {
   logger?: boolean;
   resolver?: TrackingResolver;
   botDetectionEngine?: BotDetectionEngine;
+  userAgentParser?: UserAgentParser;
+  geoLocationProvider?: GeoLocationProvider;
 }
 
 /**
@@ -55,11 +64,22 @@ export async function buildTrackerApp(options: BuildTrackerAppOptions): Promise<
 
   const resolver = options.resolver ?? new PrismaTrackingResolver(prisma);
   const botDetectionEngine = options.botDetectionEngine ?? new HeuristicBotDetectionEngine();
+  const userAgentParser = options.userAgentParser ?? new UaParserUserAgentParser();
+  // No geo provider is wired in by default — see
+  // packages/shared/src/geo-location.ts for why this is deliberate, not a
+  // placeholder to fill in later without noticing.
+  const geoLocationProvider = options.geoLocationProvider ?? new NullGeoLocationProvider();
   // Falls back to AUTH_SECRET so no new required env var is introduced —
   // see packages/config/src/schema.ts for CLICK_IP_HASH_SALT.
   const ipHashSalt = options.env.CLICK_IP_HASH_SALT ?? options.env.AUTH_SECRET;
 
-  await fastify.register(registerTrackerRoutes, { resolver, botDetectionEngine, ipHashSalt });
+  await fastify.register(registerTrackerRoutes, {
+    resolver,
+    botDetectionEngine,
+    userAgentParser,
+    geoLocationProvider,
+    ipHashSalt,
+  });
 
   return fastify;
 }

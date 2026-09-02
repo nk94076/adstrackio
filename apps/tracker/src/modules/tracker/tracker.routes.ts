@@ -6,7 +6,9 @@ import {
   hashIp,
   validateTransparentRedirectUrl,
   type BotDetectionEngine,
+  type GeoLocationProvider,
   type TrackingResolver,
+  type UserAgentParser,
 } from "@adstrackio/shared";
 import { generateClickId } from "./click-id.js";
 import { recordClick } from "./tracker.service.js";
@@ -14,6 +16,8 @@ import { recordClick } from "./tracker.service.js";
 export interface TrackerRouteOptions {
   resolver: TrackingResolver;
   botDetectionEngine: BotDetectionEngine;
+  userAgentParser: UserAgentParser;
+  geoLocationProvider: GeoLocationProvider;
   ipHashSalt: string;
 }
 
@@ -112,16 +116,24 @@ export async function registerTrackerRoutes(
       "bot classification",
     );
 
-    await recordClick(fastify.prisma, {
-      id: clickId,
-      organizationId: resolution.organizationId,
-      campaignId: resolution.campaignId,
-      trackingLinkId: resolution.trackingLinkId,
-      userAgent,
-      referrer,
-      ipHash,
-      classification,
-    });
+    await recordClick(
+      fastify.prisma,
+      {
+        id: clickId,
+        organizationId: resolution.organizationId,
+        campaignId: resolution.campaignId,
+        trackingLinkId: resolution.trackingLinkId,
+        userAgent,
+        referrer,
+        ipHash,
+        ip: request.ip,
+        classification,
+      },
+      {
+        userAgentParser: options.userAgentParser,
+        geoLocationProvider: options.geoLocationProvider,
+      },
+    );
 
     if (classification.classification === "BOT") {
       if (!resolution.safePageUrl) {

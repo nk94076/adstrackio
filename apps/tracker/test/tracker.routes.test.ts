@@ -387,3 +387,58 @@ describe("cross-organization isolation", () => {
     expect(response.statusCode).toBe(404);
   });
 });
+
+describe("enrichment failure isolation (Phase 4)", () => {
+  it("still redirects when the UserAgentParser throws", async () => {
+    const enrichmentFailureApp = await buildTrackerApp({
+      env: getEnv(),
+      logger: false,
+      userAgentParser: {
+        parse: () => {
+          throw new Error("boom: UA parser exploded");
+        },
+      },
+    });
+    try {
+      const fixture = await createTrackerFixture();
+      const target = "https://example.com/offer";
+      const response = await enrichmentFailureApp.inject({
+        method: "GET",
+        url: `/${fixture.slug}?redirection_url=${encodeURIComponent(target)}`,
+        headers: { host: fixture.hostname, "user-agent": HUMAN_UA },
+      });
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe(target);
+    } finally {
+      await enrichmentFailureApp.close();
+    }
+  });
+
+  it("still redirects when the GeoLocationProvider rejects", async () => {
+    const enrichmentFailureApp = await buildTrackerApp({
+      env: getEnv(),
+      logger: false,
+      geoLocationProvider: {
+        lookup: () => Promise.reject(new Error("boom: geo provider rejected")),
+      },
+    });
+    try {
+      const fixture = await createTrackerFixture();
+      const target = "https://example.com/offer";
+      const response = await enrichmentFailureApp.inject({
+        method: "GET",
+        url: `/${fixture.slug}?redirection_url=${encodeURIComponent(target)}`,
+        headers: { host: fixture.hostname, "user-agent": HUMAN_UA },
+      });
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe(target);
+
+      const click = await prisma.click.findFirstOrThrow({
+        where: { trackingLinkId: fixture.trackingLinkId },
+      });
+      expect(click.country).toBeNull();
+    } finally {
+      await enrichmentFailureApp.close();
+    }
+  });
+});

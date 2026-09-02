@@ -1,5 +1,13 @@
 import type { PrismaClient } from "@adstrackio/database";
-import type { BotClassificationResult } from "@adstrackio/shared";
+import {
+  UNKNOWN_DEVICE_INFO,
+  UNKNOWN_GEO_LOCATION,
+  type BotClassificationResult,
+  type DeviceInfo,
+  type GeoLocationProvider,
+  type GeoLocationResult,
+  type UserAgentParser,
+} from "@adstrackio/shared";
 
 export interface RecordClickInput {
   id: string;
@@ -9,7 +17,41 @@ export interface RecordClickInput {
   userAgent?: string;
   referrer?: string;
   ipHash: string;
+  /** The request's raw IP, used ONLY transiently for the geo lookup below
+   * (never written to the database — see recordClick's doc comment). */
+  ip: string;
   classification: BotClassificationResult;
+}
+
+export interface RecordClickDependencies {
+  userAgentParser: UserAgentParser;
+  geoLocationProvider: GeoLocationProvider;
+}
+
+/**
+ * Never let optional analytics enrichment fail the click write (and, by
+ * extension, the redirect that depends on it completing) — UA parsing is
+ * pure/synchronous so a throw here would mean a bug in the parser, and a
+ * geo provider is arbitrary third-party code once one is configured. Both
+ * are wrapped so any failure degrades to "unknown" instead of propagating.
+ */
+function safeParseUserAgent(parser: UserAgentParser, userAgent: string | undefined): DeviceInfo {
+  try {
+    return parser.parse(userAgent);
+  } catch {
+    return UNKNOWN_DEVICE_INFO;
+  }
+}
+
+async function safeLookupGeo(
+  provider: GeoLocationProvider,
+  ip: string,
+): Promise<GeoLocationResult> {
+  try {
+    return await provider.lookup(ip);
+  } catch {
+    return UNKNOWN_GEO_LOCATION;
+  }
 }
 
 /**
@@ -19,14 +61,21 @@ export interface RecordClickInput {
  * read-path filtering — this mirrors the split already documented in
  * docs/architecture/data-model.md, not a new design.
  *
- * Deliberately NOT populated here: browser/os/deviceType (beyond BOT) and
- * geo (country/region/city). There is no user-agent-parsing or
- * geo-lookup capability anywhere in this codebase yet, and building one is
- * Phase 4 (Click Analytics) work, not Phase 3's — see
- * docs/architecture/data-model.md for that split. Adding a fake/guessed
- * value here would be worse than leaving the column null.
+ * Phase 4 enrichment: browser/browserVersion/os/osVersion/deviceType come
+ * from UserAgentParser, and country/region/city/timezone from
+ * GeoLocationProvider (a no-op by default — see
+ * packages/shared/src/geo-location.ts). For a classification of BOT, the
+ * stored deviceType stays "BOT" (a much more useful analytics signal than
+ * a UA-derived guess) rather than being overwritten by the parser.
  */
-export async function recordClick(prisma: PrismaClient, input: RecordClickInput) {
+export async function recordClick(
+  prisma: PrismaClient,
+  input: RecordClickInput,
+  deps: RecordClickDependencies,
+) {
+  const deviceInfo = safeParseUserAgent(deps.userAgentParser, input.userAgent);
+  const geo = await safeLookupGeo(deps.geoLocationProvider, input.ip);
+
   return prisma.$transaction(async (tx) => {
     const click = await tx.click.create({
       data: {
@@ -37,7 +86,15 @@ export async function recordClick(prisma: PrismaClient, input: RecordClickInput)
         userAgent: input.userAgent,
         referrer: input.referrer,
         ipHash: input.ipHash,
-        deviceType: input.classification.classification === "BOT" ? "BOT" : undefined,
+        deviceType: input.classification.classification === "BOT" ? "BOT" : deviceInfo.deviceType,
+        browser: deviceInfo.browser ?? undefined,
+        browserVersion: deviceInfo.browserVersion ?? undefined,
+        os: deviceInfo.os ?? undefined,
+        osVersion: deviceInfo.osVersion ?? undefined,
+        country: geo.country ?? undefined,
+        region: geo.region ?? undefined,
+        city: geo.city ?? undefined,
+        timezone: geo.timezone ?? undefined,
         botClassification: input.classification.classification,
         botScore: input.classification.score,
       },
