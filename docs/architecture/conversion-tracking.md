@@ -186,15 +186,53 @@ Enforced exclusively through three explicit endpoints —
 taking no request body — never through a generic `PATCH`; there is no
 `PATCH` endpoint for conversions at all (nothing about a conversion
 besides its status changes after creation, and status has its own
-explicit surface). Applied via the same conditional-`updateMany`
-race-safety pattern Phase 6 established
-(`transitionConversionStatus` in `conversions.service.ts`): the transition
-is validated, then applied guarded on the status just read, so a
-concurrent status change can't be silently clobbered — the loser gets a
-`409` asking it to retry rather than corrupting state. See
-`apps/api/test/conversion-tracking.test.ts` ("handles concurrent status
-changes safely") for a test that fires `approve` and `reject` concurrently
-against the same `PENDING` conversion and asserts exactly one wins.
+explicit surface).
+
+### Concurrency: row-lock, not conditional-update
+
+`transitionConversionStatus` (`conversions.service.ts`) takes a real
+Postgres row lock — `SELECT status FROM conversions WHERE id = ... AND
+"organizationId" = ... FOR UPDATE` inside the transaction — before
+deciding anything, rather than Phase 6's conditional-`updateMany`
+approach (read, then `UPDATE ... WHERE status = <status just read>`,
+then infer what happened from the affected-row count).
+
+The distinction matters for a case conditional-`updateMany` gets wrong:
+**two concurrent calls to the same action** (two simultaneous `approve`
+requests — a retried webhook delivery, a double-clicked button). Both
+read `PENDING` before either commits, both attempt
+`WHERE status = 'PENDING'`; the loser's update matches zero rows even
+though the state it wanted (`APPROVED`) was in fact achieved, by the
+other call. Reporting that as `409 CONFLICT` would be a false positive —
+this endpoint's documented contract is that a repeated identical action
+succeeds idempotently, not that the second caller of two racing identical
+requests gets an error.
+
+With the row lock, the second transaction's `FOR UPDATE` blocks until the
+first commits or rolls back, then re-reads the *post-commit* status
+rather than racing against it:
+
+- Already at the target status (a plain repeated call, or the loser of a
+  same-target race once it acquires the lock) → idempotent no-op, no
+  audit entry, `200`.
+- Not at the target and the transition is legal from wherever the row now
+  sits → applied, audited exactly once, `200`.
+- Not at the target and the transition is illegal (e.g. `reject` lost a
+  race to `approve` — the row is now `APPROVED`, and `APPROVED ->
+  REJECTED` isn't a legal transition) → `409`, naming the actual
+  current/target statuses.
+
+This holds regardless of how many concurrent requests — identical or
+conflicting — hit one conversion: exactly one state transition happens,
+exactly one audit entry is written for it, and every other request either
+idempotently succeeds or cleanly fails with a `409` that reflects a real
+conflict rather than a race artifact.
+`apps/api/test/conversion-tracking.test.ts` covers all of this directly:
+concurrent `approve`+`approve`, `reject`+`reject`, and `reverse`+`reverse`
+(each asserting both requests return `200`, the DB ends in exactly the
+one expected status, and exactly one matching audit entry exists),
+concurrent `approve`+`reject` (exactly one `200`, one `409`, one audit
+entry), and sequential repeated calls to the same action.
 
 ## Monetary representation
 

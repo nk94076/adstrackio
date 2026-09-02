@@ -539,8 +539,8 @@ describe("conversion lifecycle", () => {
     expect(approvedCount).toBe(1);
   });
 
-  it("handles concurrent status changes safely: exactly one of approve/reject wins from PENDING", async () => {
-    const { owner, organizationId, click } = await setupOrgWithClick("lifecycle-concurrent");
+  it("handles conflicting concurrent status changes safely: exactly one of approve/reject wins from PENDING, other gets 409, exactly one audit entry", async () => {
+    const { owner, organizationId, click } = await setupOrgWithClick("lifecycle-concurrent-conflict");
     const conversion = await createPending(owner, organizationId, click);
 
     const [approve, reject] = await Promise.all([
@@ -557,13 +557,159 @@ describe("conversion lifecycle", () => {
     ]);
 
     const statusCodes = [approve.statusCode, reject.statusCode].sort();
-    // Both are legal from PENDING individually, but only one can win the
-    // race against the conditional updateMany guarding on the status it
-    // read — the loser sees status already changed and gets a 409.
+    // Both are legal from PENDING individually, but only one can win: the
+    // SELECT ... FOR UPDATE row lock in transitionConversionStatus
+    // serializes the two transactions, so the loser observes the winner's
+    // already-committed status and finds its own transition (e.g.
+    // APPROVED -> REJECTED, if reject lost) is not legal from there.
     expect(statusCodes).toEqual([200, 409]);
 
     const final = await prisma.conversion.findUniqueOrThrow({ where: { id: conversion.id } });
     expect(["APPROVED", "REJECTED"]).toContain(final.status);
+
+    const auditLogs = await app.inject({
+      method: "GET",
+      url: `/api/v1/organizations/${organizationId}/audit-logs`,
+      headers: { cookie: owner.cookie },
+    });
+    const actions = auditActions(auditLogs);
+    expect(actions.filter((a) => a === "conversion.approved" || a === "conversion.rejected")).toHaveLength(
+      1,
+    );
+  });
+
+  it("handles duplicate concurrent approve+approve safely: both requests succeed idempotently, exactly one transition, exactly one audit entry", async () => {
+    const { owner, organizationId, click } = await setupOrgWithClick("lifecycle-concurrent-approve-approve");
+    const conversion = await createPending(owner, organizationId, click);
+
+    const [a, b] = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/conversions/${conversion.id}/approve`,
+        headers: { cookie: owner.cookie },
+      }),
+      app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/conversions/${conversion.id}/approve`,
+        headers: { cookie: owner.cookie },
+      }),
+    ]);
+
+    // Both requests asked for the same end state (APPROVED) and both must
+    // succeed — the loser of the row-lock race re-reads the winner's
+    // already-committed APPROVED status, sees it matches its own target,
+    // and returns success as an idempotent no-op rather than a 409.
+    expect(a.statusCode).toBe(200);
+    expect(b.statusCode).toBe(200);
+    expect(a.json().conversion.status).toBe("APPROVED");
+    expect(b.json().conversion.status).toBe("APPROVED");
+
+    const final = await prisma.conversion.findUniqueOrThrow({ where: { id: conversion.id } });
+    expect(final.status).toBe("APPROVED");
+
+    const auditLogs = await app.inject({
+      method: "GET",
+      url: `/api/v1/organizations/${organizationId}/audit-logs`,
+      headers: { cookie: owner.cookie },
+    });
+    expect(auditActions(auditLogs).filter((a) => a === "conversion.approved")).toHaveLength(1);
+  });
+
+  it("handles duplicate concurrent reject+reject safely: both requests succeed idempotently, exactly one transition, exactly one audit entry", async () => {
+    const { owner, organizationId, click } = await setupOrgWithClick("lifecycle-concurrent-reject-reject");
+    const conversion = await createPending(owner, organizationId, click);
+
+    const [a, b] = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/conversions/${conversion.id}/reject`,
+        headers: { cookie: owner.cookie },
+      }),
+      app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/conversions/${conversion.id}/reject`,
+        headers: { cookie: owner.cookie },
+      }),
+    ]);
+
+    expect(a.statusCode).toBe(200);
+    expect(b.statusCode).toBe(200);
+    expect(a.json().conversion.status).toBe("REJECTED");
+    expect(b.json().conversion.status).toBe("REJECTED");
+
+    const final = await prisma.conversion.findUniqueOrThrow({ where: { id: conversion.id } });
+    expect(final.status).toBe("REJECTED");
+
+    const auditLogs = await app.inject({
+      method: "GET",
+      url: `/api/v1/organizations/${organizationId}/audit-logs`,
+      headers: { cookie: owner.cookie },
+    });
+    expect(auditActions(auditLogs).filter((a) => a === "conversion.rejected")).toHaveLength(1);
+  });
+
+  it("handles duplicate concurrent reverse+reverse safely: both requests succeed idempotently, exactly one transition, exactly one audit entry", async () => {
+    const { owner, organizationId, click } = await setupOrgWithClick("lifecycle-concurrent-reverse-reverse");
+    const conversion = await createPending(owner, organizationId, click);
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/organizations/${organizationId}/conversions/${conversion.id}/approve`,
+      headers: { cookie: owner.cookie },
+    });
+
+    const [a, b] = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/conversions/${conversion.id}/reverse`,
+        headers: { cookie: owner.cookie },
+      }),
+      app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${organizationId}/conversions/${conversion.id}/reverse`,
+        headers: { cookie: owner.cookie },
+      }),
+    ]);
+
+    expect(a.statusCode).toBe(200);
+    expect(b.statusCode).toBe(200);
+    expect(a.json().conversion.status).toBe("REVERSED");
+    expect(b.json().conversion.status).toBe("REVERSED");
+
+    const final = await prisma.conversion.findUniqueOrThrow({ where: { id: conversion.id } });
+    expect(final.status).toBe("REVERSED");
+
+    const auditLogs = await app.inject({
+      method: "GET",
+      url: `/api/v1/organizations/${organizationId}/audit-logs`,
+      headers: { cookie: owner.cookie },
+    });
+    expect(auditActions(auditLogs).filter((a) => a === "conversion.reversed")).toHaveLength(1);
+  });
+
+  it("remains idempotent under sequential repeated calls to the same action (reject, then reverse)", async () => {
+    const { owner, organizationId, click } = await setupOrgWithClick("lifecycle-sequential-idempotent");
+    const conversion = await createPending(owner, organizationId, click);
+
+    const rejectA = await app.inject({
+      method: "POST",
+      url: `/api/v1/organizations/${organizationId}/conversions/${conversion.id}/reject`,
+      headers: { cookie: owner.cookie },
+    });
+    const rejectB = await app.inject({
+      method: "POST",
+      url: `/api/v1/organizations/${organizationId}/conversions/${conversion.id}/reject`,
+      headers: { cookie: owner.cookie },
+    });
+    expect(rejectA.statusCode).toBe(200);
+    expect(rejectB.statusCode).toBe(200);
+    expect(rejectB.json().conversion.status).toBe("REJECTED");
+
+    const auditLogs = await app.inject({
+      method: "GET",
+      url: `/api/v1/organizations/${organizationId}/audit-logs`,
+      headers: { cookie: owner.cookie },
+    });
+    expect(auditActions(auditLogs).filter((a) => a === "conversion.rejected")).toHaveLength(1);
   });
 });
 
