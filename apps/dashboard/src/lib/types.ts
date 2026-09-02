@@ -101,6 +101,44 @@ export interface ReferralConfiguration {
   createdAt: string;
 }
 
+export type TimeseriesBucket = "hour" | "day" | "week";
+
+export interface AnalyticsRange {
+  from: string;
+  to: string;
+  timezone: string;
+}
+
+export interface ClickSummary {
+  totalClicks: number;
+  humanClicks: number;
+  botClicks: number;
+  suspiciousClicks: number;
+  unknownClicks: number;
+  uniqueClicks: number;
+  botPercentage: number;
+}
+
+export interface ClickTimeseriesPoint {
+  /** Local wall-clock start of this bucket in the requested timezone — see
+   * docs/architecture/click-analytics.md for why this intentionally has no
+   * "Z"/UTC marker. */
+  bucket: string;
+  clicks: number;
+  humanClicks: number;
+  botClicks: number;
+  uniqueClicks: number;
+}
+
+export interface ClickBreakdownRow {
+  key: string;
+  label: string;
+  clicks: number;
+  humanClicks: number;
+  botClicks: number;
+  uniqueClicks: number;
+}
+
 export interface AuditLog {
   id: string;
   action: string;
