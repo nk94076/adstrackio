@@ -9,13 +9,20 @@
  *   dependency for basic click tracking to work at all.
  * - It avoids adding a paid third-party GeoIP service (or its API key)
  *   as a requirement just to record a click.
- * - It keeps the tracker's hot path free of a network call by default —
- *   a real provider that needs one (a remote geo API) MUST NOT be awaited
- *   inline on the redirect path; see docs/architecture/click-analytics.md
- *   for the intended integration shape (a local, file-backed database
- *   lookup — e.g. MaxMind GeoLite2 — is the recommended approach
- *   precisely because it's synchronous/local and doesn't have this
- *   problem).
+ * - It keeps the tracker's hot path free of a network call by default.
+ *   `lookup` is async precisely because a real implementation is expected
+ *   to be a remote network call (e.g. a hosted geo API) — the caller
+ *   (apps/tracker's recordClick) guarantees it is never awaited on the
+ *   redirect path regardless of how slow or unreliable a configured
+ *   provider is: the lookup runs in the background, after the Click row
+ *   is already written and the redirect already sent, with its result
+ *   applied via a follow-up update if/when it resolves. See
+ *   docs/architecture/click-analytics.md for the full design. A local,
+ *   file-backed database lookup (e.g. MaxMind GeoLite2) is still a
+ *   reasonable choice when available — it avoids depending on a
+ *   third-party service's uptime — but a network-backed implementation is
+ *   not a latency risk the way it would be if the lookup were awaited
+ *   inline.
  *
  * Privacy note on the input: `lookup` takes the request's raw IP address,
  * the same transient value used to compute Click.ipHash — a geo lookup is

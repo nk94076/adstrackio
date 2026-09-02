@@ -441,4 +441,40 @@ describe("enrichment failure isolation (Phase 4)", () => {
       await enrichmentFailureApp.close();
     }
   });
+
+  it("still redirects immediately when the GeoLocationProvider never resolves (not just when it rejects)", async () => {
+    // The lookup's promise is deliberately never settled during this test.
+    // If the redirect handler awaited geo enrichment anywhere on its path,
+    // this `inject()` call would hang until the test's own timeout — the
+    // strongest possible proof that a slow/hanging geo provider cannot
+    // delay or block the redirect, independent of any wall-clock margin.
+    const neverResolvingGeoApp = await buildTrackerApp({
+      env: getEnv(),
+      logger: false,
+      geoLocationProvider: {
+        lookup: () =>
+          new Promise(() => {
+            /* deliberately never settles */
+          }),
+      },
+    });
+    try {
+      const fixture = await createTrackerFixture();
+      const target = "https://example.com/offer";
+      const response = await neverResolvingGeoApp.inject({
+        method: "GET",
+        url: `/${fixture.slug}?redirection_url=${encodeURIComponent(target)}`,
+        headers: { host: fixture.hostname, "user-agent": HUMAN_UA },
+      });
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe(target);
+
+      const click = await prisma.click.findFirstOrThrow({
+        where: { trackingLinkId: fixture.trackingLinkId },
+      });
+      expect(click.country).toBeNull();
+    } finally {
+      await neverResolvingGeoApp.close();
+    }
+  });
 });
