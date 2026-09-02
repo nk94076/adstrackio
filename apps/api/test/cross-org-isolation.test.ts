@@ -142,13 +142,14 @@ describe("cross-organization isolation (IDOR)", () => {
     });
     expect(read.statusCode).toBe(403);
 
-    const write = await app.inject({
-      method: "PATCH",
-      url: `/api/v1/organizations/${orgA}/domains/${domainA.id}`,
-      headers: { cookie: ownerB.cookie },
-      payload: { isActive: false },
-    });
-    expect(write.statusCode).toBe(403);
+    for (const action of ["verify", "activate", "deactivate"]) {
+      const write = await app.inject({
+        method: "POST",
+        url: `/api/v1/organizations/${orgA}/domains/${domainA.id}/${action}`,
+        headers: { cookie: ownerB.cookie },
+      });
+      expect(write.statusCode, action).toBe(403);
+    }
   });
 
   it("blocks an Org B member from reading or tampering with Org A's destination URL", async () => {
