@@ -92,10 +92,26 @@ not just descriptive notes:
    parameter or postback field) — never by spoofing a browser-level signal.
 
 5. **No fabricated verification status.** `TrackingDomain.verificationStatus`
-   and `sslStatus` must only ever reflect real, checked state once Phase 2
-   implements verification. Phase 1 defaults every domain to `PENDING` /
-   `NOT_CONFIGURED` specifically so there is no path today where a domain
-   appears "verified" without having been verified.
+   must only ever reflect real, checked state. Phase 2 (Domain Manager) has
+   implemented this: `verificationStatus` only becomes `VERIFIED` after a
+   real, server-performed DNS TXT-record lookup
+   (`apps/api/src/modules/domains/dns-verification.ts`) — no request field
+   lets a client assert `verified: true` directly, and `isActive` can only
+   become `true` once `VERIFIED`, enforced at both the service layer and a
+   Postgres `CHECK` constraint (see
+   `docs/architecture/security.md#domain-activation-invariant`). `sslStatus`
+   remains `NOT_CONFIGURED` — Phase 2 does not fabricate a certificate
+   status either; real SSL/TLS provisioning is left for a future phase.
+
+6. **Domain Manager (Phase 2) is a control-plane feature only.** It manages
+   `TrackingDomain` rows — creation, DNS verification, activation — and
+   nothing else. It does not implement, and must not be mistaken for, any
+   part of the actual redirect path: no redirect endpoint, no destination
+   resolution, no click logging, and no bot detection/routing. A verified
+   and active `TrackingDomain` is not itself traffic-serving; it is only a
+   prerequisite record that Phase 3 (Transparent Click Tracker) will
+   require before routing real traffic through a domain. Nothing in Phase 2
+   claims or implies Google Transparent Click Tracker certification.
 
 ## Re-reading this document
 

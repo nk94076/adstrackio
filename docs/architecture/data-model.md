@@ -17,7 +17,7 @@ so the roadmap this schema was designed against is explicit.
 | `User` | An individual account (email + password hash) | IMPLEMENTED |
 | `Organization` | A workspace/tenant | IMPLEMENTED |
 | `OrganizationMember` | Join table: user ↔ organization, with a role | IMPLEMENTED |
-| `TrackingDomain` | A hostname an organization tracks clicks on | FOUNDATION ONLY — no real DNS verification (FUTURE PHASE: Domain Manager) |
+| `TrackingDomain` | A hostname an organization tracks clicks on | IMPLEMENTED (Phase 2: Domain Manager) — real DNS TXT verification; activation gated on it. No redirect/routing behavior (FUTURE PHASE: Transparent Click Tracker) |
 | `Destination` | The business URL a campaign/link points to | IMPLEMENTED (CRUD + URL validation) |
 | `Campaign` | Groups tracking links under a name/status/budget | FOUNDATION ONLY — no routing logic (FUTURE PHASE: Rules & Routing Engine) |
 | `TrackingLink` | A routable slug on a domain, pointing at a destination | FOUNDATION ONLY — no live redirect (FUTURE PHASE: Transparent Click Tracker) |
@@ -45,10 +45,22 @@ organization is active.
 These four models are deliberately kept as separate concerns:
 
 - **TrackingDomain** — a hostname the organization controls and intends to
-  serve tracking traffic from. `verificationStatus` starts `PENDING` and
-  `sslStatus` starts `NOT_CONFIGURED`; both are placeholders for Phase 2
-  (Domain Manager), which will implement real DNS TXT-record verification
-  and certificate provisioning.
+  serve tracking traffic from. `verificationStatus` starts `PENDING` and is
+  moved to `VERIFIED` only by a real, server-performed DNS TXT-record lookup
+  (Phase 2: Domain Manager — see `docs/architecture/security.md#domain-activation-invariant`
+  and `apps/api/src/modules/domains/dns-verification.ts`). `isActive`
+  defaults to `false` and can only become `true` via the `/activate`
+  endpoint once `verificationStatus = VERIFIED`; this is enforced both in
+  the service layer and by a Postgres `CHECK` constraint
+  (`tracking_domains_active_requires_verified`, migration
+  `20260902061926_domain_manager_verification_fields`). `sslStatus` remains
+  `NOT_CONFIGURED` — certificate provisioning is not part of Phase 2 and is
+  left for a future phase to implement for real rather than being faked
+  here. Domain Manager deliberately does not implement any redirect,
+  destination-resolution, click-logging, or bot-routing behavior — a
+  verified/active `TrackingDomain` is only ever a row in this table until
+  Phase 3 (Transparent Click Tracker) builds the actual redirect path; see
+  `docs/compliance/google-transparent-tracker.md`.
 - **Destination** — the actual business URL (e.g. an offer page or app
   store link). Stored and normalized independently of any campaign so the
   same destination can be reused across campaigns/tracking links, and so
