@@ -166,12 +166,75 @@ defined in `packages/shared/src/api-error.ts` and enforced centrally by
 exceptions are logged in full server-side but returned to the client as a
 generic `500 INTERNAL_ERROR` with no stack trace or internal detail.
 
+## Transparent Click Tracker (apps/tracker, Phase 3)
+
+`apps/tracker`'s `GET /:slug` is the first unauthenticated, public,
+high-volume endpoint in this codebase — different threat model from
+apps/api's authenticated admin surface. Full architectural rationale is in
+`docs/compliance/google-transparent-tracker.md`; this section covers its
+security properties specifically.
+
+- **Domain gating reuses Phase 2's invariant, doesn't re-implement it.**
+  `PrismaTrackingResolver` (`apps/tracker/src/modules/tracker/prisma-tracking-resolver.ts`)
+  requires `TrackingDomain.verificationStatus = VERIFIED` and
+  `isActive = true` before ever looking at the slug. Unknown, unverified,
+  and inactive domains all return the same `404` — distinguishing them to
+  an anonymous caller would leak which hostnames are registered tracking
+  domains. An inactive/unknown `TrackingLink` gets `404`; a
+  `PAUSED`/`ARCHIVED` one gets `410`, since revealing "this slug used to
+  work" is materially less sensitive than domain enumeration.
+- **Organization isolation is structural, then re-checked.** A
+  `TrackingLink` is looked up by the compound key `(trackingDomainId,
+  slug)`, so one organization's link can never be returned for another
+  organization's domain by construction of the query — not by an
+  app-level `WHERE organizationId = ...` filter that a bug could omit.
+  `PrismaTrackingResolver` additionally asserts
+  `campaign.organizationId === domain.organizationId` before returning,
+  purely as defense in depth against a data-integrity mistake (`apps/api`'s
+  `createTrackingLink` already guarantees this at write time — see
+  `apps/api/test/tracking-foundation.test.ts`). Covered by
+  `apps/tracker/test/tracker.routes.test.ts` ("cross-organization
+  isolation"), including a test that manually constructs the mismatched-org
+  row this check exists to catch.
+- **The transparent redirect target is deliberately open by design — read
+  this as a tradeoff, not an oversight.** `redirection_url` is validated
+  by `validateTransparentRedirectUrl`
+  (`packages/shared/src/transparent-redirect.ts`) — http(s) only, no
+  userinfo, no control characters (defends against `Location`-header CRLF
+  injection independent of Node's own header-value validation), bounded
+  length — using the exact same parsed value for both the check and the
+  redirect (no two-parser confusion). It does **not** restrict which
+  http(s) host the URL points to: that's the point of "transparent," and
+  restricting it would reintroduce the opaque-backend-destination pattern
+  this design exists to avoid. See
+  `docs/compliance/google-transparent-tracker.md` for the full reasoning
+  and its operational implications.
+- **No server-side fetch of any redirect target.** The tracker's only
+  network action on a redirect decision is setting a `Location` header —
+  never an outbound HTTP request to `redirection_url` or to a Safe Page
+  URL, which is what would turn this into an SSRF vector rather than "just"
+  an open redirect.
+- **Bot classification cannot be influenced by the client.**
+  `HeuristicBotDetectionEngine` computes its verdict solely from the
+  request's own `User-Agent` header; no query parameter, custom header, or
+  other client-supplied value is read for this decision. Covered by a test
+  that sends `?isBot=false&bot=false` alongside a known-bot UA and asserts
+  the Safe Page still fires.
+- **Click IDs are not sequential or guessable.** Generated with
+  `crypto.randomUUID()` (`apps/tracker/src/modules/tracker/click-id.ts`)
+  rather than relying on the `Click` model's default `cuid()`, and never
+  appended to the outward-facing redirect URL — it exists purely for the
+  `Click` row and internal log correlation.
+- **No raw IP is ever stored.** `hashIp` (`packages/shared/src/ip-hash.ts`)
+  salts and one-way-hashes the request IP before it reaches `Click.ipHash`.
+
 ## Secrets and logging
 
 - `packages/logger` redacts `password`, `passwordHash`, `token`,
-  `accessToken`, `refreshToken`, `authorization`, `cookie`, `secret`,
-  `authSecret`, and `apiKey` fields (at any nesting depth pino's redact
-  paths can reach) before anything is written to stdout.
+  `accessToken`, `refreshToken`, `verificationToken`, `authorization`,
+  `cookie`, `secret`, `authSecret`, and `apiKey` fields (at any nesting
+  depth pino's redact paths can reach) before anything is written to
+  stdout.
 - `AuditLog.metadata` must never contain secrets — this is a code-review
   convention today (every `writeAuditLog` call site is small and
   reviewable); nothing currently persists a raw password/token into an
@@ -214,3 +277,16 @@ generic `500 INTERNAL_ERROR` with no stack trace or internal detail.
   instances. `REDIS_URL` is already part of the typed config for exactly
   this reason — swapping in a Redis-backed store is a small, isolated
   change when apps/api is horizontally scaled.
+- **apps/tracker has no rate limiting at all** (Phase 3). Deliberately
+  deferred: real ad-click traffic can legitimately arrive in high-volume
+  bursts from a shared egress IP (corporate NAT, mobile carrier CGNAT), and
+  a naive per-IP limit risks dropping real clicks more than it stops
+  abuse. Revisit with real traffic data.
+- **The transparent redirect endpoint is an open redirect by design** —
+  see `docs/compliance/google-transparent-tracker.md` for why this is
+  accepted rather than fixed, and what it does and doesn't restrict.
+- **`HeuristicBotDetectionEngine` is a basic, explicitly-provisional
+  placeholder**, not a production bot-detection system. It will
+  misclassify some real traffic in both directions; Phase 5 is expected to
+  replace it with the product's real capability through the same
+  `BotDetectionEngine` interface.
