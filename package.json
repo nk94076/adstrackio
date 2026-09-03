@@ -21,7 +21,8 @@
     "db:migrate:deploy": "pnpm --filter @adstrackio/database db:migrate:deploy",
     "db:studio": "pnpm --filter @adstrackio/database db:studio",
     "db:seed": "pnpm --filter @adstrackio/database db:seed",
-    "compliance:test": "pnpm --filter @adstrackio/tracker compliance:test"
+    "compliance:test": "pnpm --filter @adstrackio/tracker compliance:test",
+    "packaging:test": "node scripts/verify-production-packaging.mjs"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.18.0",
