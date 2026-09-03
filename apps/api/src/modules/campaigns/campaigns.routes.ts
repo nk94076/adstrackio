@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { createCampaignSchema, updateCampaignSchema } from "@adstrackio/validation";
+import { createCampaignSchema, listCampaignsQuerySchema, updateCampaignSchema } from "@adstrackio/validation";
+import { actorIdOf } from "../../plugins/api-key-auth.js";
 import {
   activateCampaign,
   archiveCampaign,
@@ -10,29 +11,34 @@ import {
   updateCampaign,
 } from "./campaigns.service.js";
 
+/**
+ * Dashboard sessions AND public-API keys both reach these routes (Phase
+ * 11: API + Integrations) via `authenticateEither`/`requireOrgAccess` —
+ * see apps/api/src/plugins/api-key-auth.ts. Session behavior is
+ * unchanged: `requireOrgAccess` falls through to the exact same
+ * `requireOrganizationMember` check as before whenever there is no
+ * Bearer token. READ scope covers GET; WRITE covers everything else,
+ * matching docs/api/api-keys.md#scopes.
+ */
 export async function registerCampaignRoutes(fastify: FastifyInstance) {
   fastify.get(
     "/organizations/:organizationId/campaigns",
-    { preHandler: [fastify.authenticate, fastify.requireOrganizationMember("VIEWER")] },
+    { preHandler: [fastify.authenticateEither, fastify.requireOrgAccess("VIEWER", ["READ"])] },
     async (request) => {
       const { organizationId } = request.params as { organizationId: string };
-      const campaigns = await listCampaigns(fastify.prisma, organizationId);
+      const query = listCampaignsQuerySchema.parse(request.query);
+      const campaigns = await listCampaigns(fastify.prisma, organizationId, query);
       return { campaigns };
     },
   );
 
   fastify.post(
     "/organizations/:organizationId/campaigns",
-    { preHandler: [fastify.authenticate, fastify.requireOrganizationMember("MEMBER")] },
+    { preHandler: [fastify.authenticateEither, fastify.requireOrgAccess("MEMBER", ["WRITE"])] },
     async (request, reply) => {
       const { organizationId } = request.params as { organizationId: string };
       const input = createCampaignSchema.parse(request.body);
-      const campaign = await createCampaign(
-        fastify.prisma,
-        request.user!.id,
-        organizationId,
-        input,
-      );
+      const campaign = await createCampaign(fastify.prisma, actorIdOf(request), organizationId, input);
       reply.status(201);
       return { campaign };
     },
@@ -40,7 +46,7 @@ export async function registerCampaignRoutes(fastify: FastifyInstance) {
 
   fastify.get(
     "/organizations/:organizationId/campaigns/:campaignId",
-    { preHandler: [fastify.authenticate, fastify.requireOrganizationMember("VIEWER")] },
+    { preHandler: [fastify.authenticateEither, fastify.requireOrgAccess("VIEWER", ["READ"])] },
     async (request) => {
       const { organizationId, campaignId } = request.params as {
         organizationId: string;
@@ -53,7 +59,7 @@ export async function registerCampaignRoutes(fastify: FastifyInstance) {
 
   fastify.patch(
     "/organizations/:organizationId/campaigns/:campaignId",
-    { preHandler: [fastify.authenticate, fastify.requireOrganizationMember("MEMBER")] },
+    { preHandler: [fastify.authenticateEither, fastify.requireOrgAccess("MEMBER", ["WRITE"])] },
     async (request) => {
       const { organizationId, campaignId } = request.params as {
         organizationId: string;
@@ -62,7 +68,7 @@ export async function registerCampaignRoutes(fastify: FastifyInstance) {
       const input = updateCampaignSchema.parse(request.body);
       const campaign = await updateCampaign(
         fastify.prisma,
-        request.user!.id,
+        actorIdOf(request),
         organizationId,
         campaignId,
         input,
@@ -81,54 +87,39 @@ export async function registerCampaignRoutes(fastify: FastifyInstance) {
   // for what happens when the current status doesn't allow it).
   fastify.post(
     "/organizations/:organizationId/campaigns/:campaignId/activate",
-    { preHandler: [fastify.authenticate, fastify.requireOrganizationMember("ADMIN")] },
+    { preHandler: [fastify.authenticateEither, fastify.requireOrgAccess("ADMIN", ["WRITE"])] },
     async (request) => {
       const { organizationId, campaignId } = request.params as {
         organizationId: string;
         campaignId: string;
       };
-      const campaign = await activateCampaign(
-        fastify.prisma,
-        request.user!.id,
-        organizationId,
-        campaignId,
-      );
+      const campaign = await activateCampaign(fastify.prisma, actorIdOf(request), organizationId, campaignId);
       return { campaign };
     },
   );
 
   fastify.post(
     "/organizations/:organizationId/campaigns/:campaignId/pause",
-    { preHandler: [fastify.authenticate, fastify.requireOrganizationMember("ADMIN")] },
+    { preHandler: [fastify.authenticateEither, fastify.requireOrgAccess("ADMIN", ["WRITE"])] },
     async (request) => {
       const { organizationId, campaignId } = request.params as {
         organizationId: string;
         campaignId: string;
       };
-      const campaign = await pauseCampaign(
-        fastify.prisma,
-        request.user!.id,
-        organizationId,
-        campaignId,
-      );
+      const campaign = await pauseCampaign(fastify.prisma, actorIdOf(request), organizationId, campaignId);
       return { campaign };
     },
   );
 
   fastify.post(
     "/organizations/:organizationId/campaigns/:campaignId/archive",
-    { preHandler: [fastify.authenticate, fastify.requireOrganizationMember("ADMIN")] },
+    { preHandler: [fastify.authenticateEither, fastify.requireOrgAccess("ADMIN", ["WRITE"])] },
     async (request) => {
       const { organizationId, campaignId } = request.params as {
         organizationId: string;
         campaignId: string;
       };
-      const campaign = await archiveCampaign(
-        fastify.prisma,
-        request.user!.id,
-        organizationId,
-        campaignId,
-      );
+      const campaign = await archiveCampaign(fastify.prisma, actorIdOf(request), organizationId, campaignId);
       return { campaign };
     },
   );

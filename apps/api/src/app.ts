@@ -4,6 +4,7 @@ import { REDACT_PATHS } from "@adstrackio/logger";
 import { prismaPlugin } from "./plugins/prisma.js";
 import { securityPlugin } from "./plugins/security.js";
 import { authPlugin } from "./plugins/auth.js";
+import { apiKeyAuthPlugin } from "./plugins/api-key-auth.js";
 import { errorHandlerPlugin } from "./plugins/error-handler.js";
 import { registerAuthRoutes } from "./modules/auth/auth.routes.js";
 import { registerOrganizationRoutes } from "./modules/organizations/organizations.routes.js";
@@ -18,6 +19,8 @@ import { registerConversionRoutes } from "./modules/conversions/conversions.rout
 import { registerRoutingRuleRoutes } from "./modules/routing-rules/routing-rules.routes.js";
 import { registerAffiliatePartnerRoutes } from "./modules/affiliate-partners/affiliate-partners.routes.js";
 import { registerReportRoutes } from "./modules/reports/reports.routes.js";
+import { registerApiKeyRoutes } from "./modules/api-keys/api-keys.routes.js";
+import { registerWebhookRoutes } from "./modules/webhooks/webhooks.routes.js";
 
 export interface BuildAppOptions {
   env: Env;
@@ -39,6 +42,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
   await fastify.register(prismaPlugin);
   await fastify.register(securityPlugin, { env: options.env });
   await fastify.register(authPlugin, { env: options.env });
+  await fastify.register(apiKeyAuthPlugin);
   await fastify.register(errorHandlerPlugin);
 
   fastify.get("/health", async () => ({ status: "ok", service: "api" }));
@@ -58,6 +62,8 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       await registerRoutingRuleRoutes(v1);
       await registerAffiliatePartnerRoutes(v1);
       await registerReportRoutes(v1);
+      await registerApiKeyRoutes(v1);
+      await registerWebhookRoutes(v1, { env: options.env });
     },
     { prefix: "/api/v1" },
   );

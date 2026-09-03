@@ -125,6 +125,38 @@ enum ReferralProofReviewStatus {
   REJECTED
 }
 
+/// Permission scopes an ApiKey can carry (Phase 11: API + Integrations) —
+/// see docs/api/api-keys.md. Deliberately a small flat set, not a
+/// granular permissions matrix — the same restraint packages/auth/src/roles.ts
+/// already applies to OrganizationRole. Orthogonal to OrganizationRole:
+/// scopes gate WHAT an API key may call, not WHO is calling — see
+/// apps/api/src/plugins/api-key-auth.ts.
+enum ApiKeyScope {
+  READ
+  WRITE
+  REPORTS
+  CONVERSIONS
+}
+
+/// Lifecycle status of one queued webhook delivery attempt-set (Phase 11)
+/// — see docs/api/webhooks.md#retries.
+enum WebhookDeliveryStatus {
+  PENDING
+  DELIVERED
+  FAILED
+  EXHAUSTED
+}
+
+/// Whether a business-event outbox row has been fanned out into
+/// WebhookDelivery rows yet (Phase 11) — see
+/// docs/api/webhooks.md#outbox-and-delivery-architecture. Not the delivery
+/// outcome itself (WebhookDeliveryStatus is): a PROCESSED OutboxEvent may
+/// still have deliveries pending, retrying, or exhausted.
+enum OutboxEventStatus {
+  PENDING
+  PROCESSED
+}
+
 // ---------------------------------------------------------------------------
 // Identity & organizations
 // ---------------------------------------------------------------------------
@@ -142,6 +174,8 @@ model User {
   referralConfigurations  ReferralConfiguration[] @relation("ReferralConfigurationCreatedBy")
   referralProofsSubmitted ReferralProof[]         @relation("ReferralProofSubmittedBy")
   referralProofsReviewed  ReferralProof[]         @relation("ReferralProofReviewedBy")
+  apiKeysCreated          ApiKey[]                @relation("ApiKeyCreatedBy")
+  webhookEndpointsCreated WebhookEndpoint[]       @relation("WebhookEndpointCreatedBy")
 
   @@map("users")
 }
@@ -164,6 +198,10 @@ model Organization {
   routingRules           RoutingRule[]
   affiliatePartners        AffiliatePartner[]
   campaignAffiliatePartners CampaignAffiliatePartner[]
+  apiKeys                  ApiKey[]
+  webhookEndpoints          WebhookEndpoint[]
+  outboxEvents              OutboxEvent[]
+  idempotencyRecords        IdempotencyRecord[]
 
   @@map("organizations")
 }
@@ -698,4 +736,231 @@ model AuditLog {
   @@index([organizationId, createdAt])
   @@index([actorUserId])
   @@map("audit_logs")
+}
+
+// ---------------------------------------------------------------------------
+// API + Integrations (Phase 11) — see docs/api/overview.md and
+// docs/architecture/api-integrations.md for the full design.
+// ---------------------------------------------------------------------------
+
+/// An organization-scoped credential for the public /api/v1 surface (Phase
+/// 11). The raw secret is never persisted — only `keyPrefix` (a short,
+/// non-secret slice of the random secret, plaintext, used purely to look
+/// the row up in O(1) before verifying) and `keyHash` (a SHA-256 digest of
+/// the FULL raw key, compared with a constant-time comparison — see
+/// packages/auth/src/api-key.ts). Unlike User.passwordHash, this
+/// deliberately does NOT use argon2: a user password is low-entropy and
+/// needs a slow, memory-hard KDF to resist offline guessing, but an API
+/// key secret is 256 bits of crypto.randomBytes — already unguessable — so
+/// hashing it with a deliberately slow KDF would only add ~100ms+ of
+/// self-inflicted latency (and a cheap CPU-exhaustion vector) to every
+/// single public API request for no security benefit. See
+/// docs/api/api-keys.md#hashing for the full rationale.
+///
+/// organizationId is set once at creation from the authenticated session's
+/// own membership-checked URL path and never updated afterward — the same
+/// IDOR boundary every other organization-scoped model in this codebase
+/// already relies on.
+model ApiKey {
+  id             String        @id @default(cuid())
+  organizationId String
+  name           String
+  keyPrefix      String        @unique
+  keyHash        String
+  scopes         ApiKeyScope[]
+  lastUsedAt     DateTime?
+  expiresAt      DateTime?
+  revokedAt      DateTime?
+  createdBy      String
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  creator      User         @relation("ApiKeyCreatedBy", fields: [createdBy], references: [id])
+
+  @@index([organizationId])
+  @@map("api_keys")
+}
+
+/// An organization-configured HTTP destination that receives signed
+/// webhook deliveries for the event types it subscribes to (Phase 11) —
+/// see docs/api/webhooks.md.
+///
+/// `secretEncrypted` holds the HMAC signing secret encrypted at rest
+/// (AES-256-GCM, keyed by a value derived from AUTH_SECRET — see
+/// packages/auth/src/secret-box.ts) rather than a one-way hash: unlike
+/// ApiKey, this secret must be *retrievable* server-side, because the
+/// server itself has to reproduce the exact same HMAC-SHA256 signature on
+/// every outgoing delivery (the same reason Stripe/GitHub webhook secrets
+/// are retrievable server-side, not one-way hashed). Encryption-at-rest
+/// protects against a raw database dump; it does not protect against a
+/// compromise of the running API process itself, which could always
+/// decrypt secrets it holds the key to reconstruct — see
+/// docs/api/webhooks.md#secret-storage for this documented boundary.
+/// Never returned by any API response after the create/rotate call that
+/// generated it.
+///
+/// `subscribedEvents` is validated against the closed
+/// packages/shared/src/webhook-events.ts allowlist at write time — never
+/// an arbitrary string a client can inject as a fake event type.
+model WebhookEndpoint {
+  id               String    @id @default(cuid())
+  organizationId   String
+  name             String
+  url              String
+  secretEncrypted  String
+  active           Boolean   @default(true)
+  subscribedEvents String[]
+  createdBy        String
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  lastDeliveryAt   DateTime?
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  creator      User              @relation("WebhookEndpointCreatedBy", fields: [createdBy], references: [id])
+  deliveries   WebhookDelivery[]
+
+  @@index([organizationId])
+  @@map("webhook_endpoints")
+}
+
+/// The transactional outbox (Phase 11): one row per real business-lifecycle
+/// event, written in the SAME database transaction as the mutation it
+/// describes (see apps/api/src/modules/webhooks/outbox.service.ts's
+/// `publishEvent`, called from conversions/affiliate-partners/campaigns/
+/// tracking-links service functions immediately alongside their existing
+/// `writeAuditLog` call). This is what makes event emission atomic with
+/// the mutation: either both the business row and this event row commit
+/// together, or neither does — there is no window where the DB write
+/// succeeds but the event is lost, nor one where an event fires for a
+/// mutation that then rolls back.
+///
+/// Duplicate-event prevention deliberately does NOT rely on a dedupe key
+/// on this table. `publishEvent` is only ever called from the same
+/// branch of each service function that also writes an audit-log entry —
+/// the branch that runs ONLY when a real state transition actually
+/// happens (see e.g. conversions.service.ts's transitionConversionStatus:
+/// a same-target idempotent retry returns early before reaching either
+/// call). A retried HTTP request that resolves to a no-op therefore
+/// produces neither a duplicate audit entry NOR a duplicate outbox event,
+/// for the same underlying reason — no new independent dedupe mechanism
+/// needed here.
+///
+/// A background worker (apps/api/src/modules/webhooks/webhook-delivery-worker.ts)
+/// fans PENDING rows out into WebhookDelivery rows (one per subscribed,
+/// active WebhookEndpoint in the event's organization) and marks the row
+/// PROCESSED — this fan-out is itself idempotent via WebhookDelivery's own
+/// `@@unique([webhookEndpointId, eventId])` constraint, so re-scanning an
+/// already-fanned-out event is always safe.
+model OutboxEvent {
+  id             String            @id @default(cuid())
+  organizationId String
+  /// One of packages/shared/src/webhook-events.ts's WEBHOOK_EVENT_TYPES
+  /// (e.g. "conversion.approved"), plus the reserved "webhook.test" value
+  /// used only by the webhook test-send endpoint. Deliberately a plain
+  /// String, not a Prisma enum: Postgres enum labels cannot contain a
+  /// literal "." and the wire-format event `type` (see
+  /// docs/api/webhooks.md#payload) must read exactly "conversion.approved",
+  /// not a re-cased identifier — validated at the application layer
+  /// instead (every write site is internal service code, never a
+  /// client-supplied value).
+  type          String
+  aggregateType String
+  aggregateId   String
+  payload       Json
+  status        OutboxEventStatus @default(PENDING)
+  createdAt     DateTime          @default(now())
+  processedAt   DateTime?
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  deliveries   WebhookDelivery[]
+
+  @@index([status, createdAt])
+  @@index([organizationId])
+  @@map("outbox_events")
+}
+
+/// One delivery job for one (WebhookEndpoint, OutboxEvent) pair (Phase 11)
+/// — see docs/api/webhooks.md#retries. Retries update THIS row in place
+/// (incrementing `attempt`, moving `nextAttemptAt` forward with
+/// exponential backoff) rather than inserting a new row per attempt, which
+/// is what the unique constraint below actually protects: the fan-out
+/// step can safely run more than once for the same event (e.g. if the
+/// worker crashes mid-scan) without ever producing two competing delivery
+/// jobs for the same endpoint+event.
+///
+/// statuses: PENDING (queued or awaiting its next retry — see
+/// `nextAttemptAt`), DELIVERED (terminal success), FAILED (terminal —
+/// the destination returned a non-retryable 4xx), EXHAUSTED (terminal —
+/// ran out of retries against a retryable failure). See
+/// docs/api/webhooks.md#retries for the exact retryable/non-retryable
+/// status-code split.
+model WebhookDelivery {
+  id                  String                @id @default(cuid())
+  webhookEndpointId   String
+  eventId             String
+  attempt             Int                   @default(0)
+  status              WebhookDeliveryStatus @default(PENDING)
+  responseStatus      Int?
+  responseBodySnippet String?
+  deliveredAt         DateTime?
+  nextAttemptAt       DateTime              @default(now())
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+
+  webhookEndpoint WebhookEndpoint @relation(fields: [webhookEndpointId], references: [id], onDelete: Cascade)
+  event           OutboxEvent     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@unique([webhookEndpointId, eventId])
+  @@index([status, nextAttemptAt])
+  @@map("webhook_deliveries")
+}
+
+/// Backs the `Idempotency-Key` request header (Phase 11) — see
+/// docs/api/api-keys.md#idempotency for the full design and its
+/// relationship to Conversion.externalConversionId.
+///
+/// There is deliberately no `status` column. A row is only ever inserted
+/// as part of the SAME database transaction that also performs the
+/// underlying mutation and records its result (see
+/// apps/api/src/modules/idempotency/idempotency.service.ts's
+/// `withIdempotencyKey`) — so if that transaction rolls back (the request
+/// was invalid, a downstream check failed), the insert rolls back with it
+/// and the row never becomes visible to any other transaction at all. Any
+/// row another request can ever actually read is therefore, by
+/// construction, always for a fully-completed prior request — "PENDING"
+/// is not a state any reader can ever observe, so it was not worth
+/// modeling.
+///
+/// Concurrency safety comes from the `@@unique` constraint below, not
+/// from application-level locking: Postgres blocks a second concurrent
+/// INSERT of the same (organizationId, scope, key) until the first
+/// transaction commits or rolls back, then either raises a unique
+/// violation (first committed — caller replays the stored response) or
+/// succeeds outright (first rolled back — caller proceeds normally). This
+/// is the same guarantee every unique-constraint-backed dedupe path in
+/// this codebase already relies on (e.g.
+/// conversions_organizationId_externalConversionId_key).
+model IdempotencyRecord {
+  id             String   @id @default(cuid())
+  organizationId String
+  /// Which mutation this key is scoped to (e.g. "conversion.create") —
+  /// namespacing so the same client-chosen key string can be reused
+  /// across different endpoints without colliding.
+  scope          String
+  key            String
+  /// SHA-256 hex digest of the canonicalized (stable-key-order) request
+  /// body — lets a replay of the identical request be distinguished from
+  /// a conflicting reuse of the same key with a different payload.
+  requestHash    String
+  resourceType   String?
+  resourceId     String?
+  responseStatus Int
+  responseBody   Json
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, scope, key])
+  @@map("idempotency_records")
 }

@@ -102,7 +102,7 @@ function mergeTimeseries(
 }
 
 export async function registerReportRoutes(fastify: FastifyInstance) {
-  const preHandler = [fastify.authenticate, fastify.requireOrganizationMember("VIEWER")];
+  const preHandler = [fastify.authenticateEither, fastify.requireOrgAccess("VIEWER", ["READ", "REPORTS"])];
 
   // Combines the existing click summary and conversion summary (each
   // independently org-scoped and filtered) into the one "at a glance"

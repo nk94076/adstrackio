@@ -340,6 +340,72 @@ export interface DimensionBreakdownRow {
   conversionRate: number;
 }
 
+// ---------------------------------------------------------------------------
+// API + Integrations (Phase 11) — see docs/api/overview.md.
+// ---------------------------------------------------------------------------
+
+export type ApiKeyScope = "READ" | "WRITE" | "REPORTS" | "CONVERSIONS";
+
+export interface ApiKey {
+  id: string;
+  organizationId: string;
+  name: string;
+  /** Non-secret, safe to display (e.g. "atk_live_AbCdEfGhIj…") — never
+   * the full secret. */
+  keyPrefix: string;
+  scopes: ApiKeyScope[];
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+  /** Present ONLY in the response to a create/rotate call — never
+   * returned by list/get. */
+  key?: string;
+}
+
+export type WebhookEventType =
+  | "conversion.created"
+  | "conversion.approved"
+  | "conversion.rejected"
+  | "conversion.reversed"
+  | "affiliate_partner.created"
+  | "affiliate_partner.updated"
+  | "affiliate_partner.activated"
+  | "affiliate_partner.paused"
+  | "affiliate_partner.archived"
+  | "campaign.created"
+  | "campaign.updated"
+  | "tracking_link.created"
+  | "tracking_link.updated";
+
+export interface WebhookEndpoint {
+  id: string;
+  organizationId: string;
+  name: string;
+  url: string;
+  active: boolean;
+  subscribedEvents: WebhookEventType[];
+  lastDeliveryAt: string | null;
+  createdAt: string;
+  /** Present ONLY in the response to a create/rotate-secret call. */
+  secret?: string;
+}
+
+export type WebhookDeliveryStatus = "PENDING" | "DELIVERED" | "FAILED" | "EXHAUSTED";
+
+export interface WebhookDelivery {
+  id: string;
+  webhookEndpointId: string;
+  eventId: string;
+  attempt: number;
+  status: WebhookDeliveryStatus;
+  responseStatus: number | null;
+  responseBodySnippet: string | null;
+  deliveredAt: string | null;
+  nextAttemptAt: string;
+  createdAt: string;
+}
+
 export interface AuditLog {
   id: string;
   action: string;

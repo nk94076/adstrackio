@@ -2,8 +2,8 @@
 
 ## Status
 
-This document describes AdstrackIO's architecture as of **Phase 10
-(Attribution & Advanced Reporting)**. Phase 1 established the monorepo, data model,
+This document describes AdstrackIO's architecture as of **Phase 11
+(API + Integrations)**. Phase 1 established the monorepo, data model,
 authentication, and API foundation; Phase 2 (Domain Manager) added real
 DNS verification and domain activation; Phase 3 added the real tracker
 redirect endpoint; Phase 4 added User-Agent/geo enrichment on `Click` rows
@@ -36,9 +36,22 @@ dimension-breakdown reports, plus value/EPC fields on the existing
 affiliate-partner performance endpoint) built entirely on top of Phase
 4/7/9's existing `Click`/`Conversion` aggregation functions — no new
 attribution mechanism, no schema change, no new tracker code — see
-`docs/architecture/attribution-reporting.md`. Later phases (API +
-Integrations, Google Certification) build on top of what's here, without
-requiring a rewrite of it.
+`docs/architecture/attribution-reporting.md`; Phase 11 added a versioned
+public API surface (`/api/v1`) that external advertisers/affiliates/
+agencies can authenticate against with organization-scoped API keys
+(scoped READ/WRITE/REPORTS/CONVERSIONS), reusing — never duplicating —
+the exact same campaign/tracking-link/conversion/reporting service
+functions and route paths dashboard sessions already used; an
+Idempotency-Key-backed dedup mechanism for POST conversions on top of the
+existing DB-unique-constraint pattern; and an outbox-pattern webhook
+system (signed HMAC-SHA256 deliveries, bounded retries, SSRF-safe
+destination validation) that fires on Phase 7/9's existing conversion/
+affiliate-partner/campaign/tracking-link lifecycle mutations, delivered
+by a minimal PostgreSQL-backed queue with zero new synchronous calls
+anywhere in `apps/tracker` — see `docs/api/overview.md` and
+`docs/architecture/api-integrations.md`. Later phases (Google
+Certification) build on top of what's here, without requiring a rewrite
+of it.
 
 Nothing described as "future" or "not implemented" below exists yet. This
 document is written to stay accurate as those phases land — update it as
@@ -261,9 +274,27 @@ session model and the tradeoffs this accepts.
   dimension Phase 4 hadn't added), and dimension/timeseries filters for
   country/device/browser/OS/bot classification across every existing
   analytics endpoint too. See `docs/architecture/attribution-reporting.md`.
-- **Postbacks/webhooks for conversion status changes** (Phase 11) are out
-  of scope so far — Phase 7 exposes the conversion service functions as a
-  clean boundary for a future API/integrations layer to build on, but no
-  webhook delivery exists yet.
+- **API + Integrations (Phase 11)** is implemented — organization-scoped
+  `ApiKey` credentials (256-bit random secret, SHA-256 hashed, shown once)
+  authenticate via `Authorization: Bearer atk_live_...` against the SAME
+  campaign/tracking-link/conversion/analytics/reports routes dashboard
+  sessions already use (`fastify.authenticateEither`/`requireOrgAccess` —
+  additive to, never a replacement for, session auth), gated by
+  READ/WRITE/REPORTS/CONVERSIONS scopes. POST conversions additionally
+  accept an `Idempotency-Key` header, backed by a real `IdempotencyRecord`
+  table and Postgres's own unique-constraint insert semantics (no
+  in-memory map). A transactional outbox (`OutboxEvent`, written in the
+  same transaction as each conversion/affiliate-partner/campaign/
+  tracking-link mutation it describes) feeds a `WebhookDelivery` queue
+  processed by a plain interval in `apps/api`'s own process — HMAC-SHA256
+  signed, bounded exponential-backoff retries, and destination URLs
+  validated against a real SSRF blocklist (loopback/private/link-local/
+  cloud-metadata ranges, re-checked fresh immediately before every
+  delivery attempt, not just at endpoint creation). No BullMQ/Redis: the
+  REDIS_URL env var remains Phase-1-foundation-only (validated at startup,
+  never connected to). `apps/tracker` is untouched — zero webhook/API-key
+  code exists there, and no synchronous network call was added to its
+  redirect hot path. See `docs/api/overview.md` and
+  `docs/architecture/api-integrations.md`.
 - **Any Google Transparent Click Tracker certification claim** — see
   `docs/compliance/google-transparent-tracker.md`.

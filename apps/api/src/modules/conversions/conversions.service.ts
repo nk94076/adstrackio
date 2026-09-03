@@ -4,9 +4,42 @@ import {
   InvalidConversionStatusTransitionError,
   assertValidConversionStatusTransition,
   type ConversionStatus,
+  type WebhookEventType,
 } from "@adstrackio/shared";
 import type { CreateConversionInput, ListConversionsQuery } from "@adstrackio/validation";
 import { writeAuditLog } from "../audit-logs/audit-log.service.js";
+import { publishEvent } from "../webhooks/outbox.service.js";
+
+/** Webhook payload shape shared by conversion.created/approved/rejected/
+ * reversed (Phase 11) — see docs/api/webhooks.md#payload. Deliberately
+ * just the Conversion row's own fields (no re-fetched Click/
+ * AffiliatePartner join): a consumer needing the full attribution chain
+ * already has clickId and can query the reporting API for it, and
+ * re-joining on every status transition would be extra work on a path
+ * that must stay fast and simple. */
+function conversionEventPayload(conversion: {
+  id: string;
+  eventName: string;
+  status: string;
+  value: Prisma.Decimal | null;
+  currency: string | null;
+  clickId: string;
+  campaignId: string;
+  trackingLinkId: string;
+  occurredAt: Date;
+}): Record<string, unknown> {
+  return {
+    id: conversion.id,
+    eventName: conversion.eventName,
+    status: conversion.status,
+    value: conversion.value ? conversion.value.toString() : null,
+    currency: conversion.currency,
+    clickId: conversion.clickId,
+    campaignId: conversion.campaignId,
+    trackingLinkId: conversion.trackingLinkId,
+    occurredAt: conversion.occurredAt.toISOString(),
+  };
+}
 
 /**
  * Creates a Conversion attributed to an existing Click. campaignId/
@@ -29,13 +62,23 @@ import { writeAuditLog } from "../audit-logs/audit-log.service.js";
  * organizationId are derived, not client-chosen, so they can't be the
  * cause of a different unique constraint firing.
  */
-export async function createConversion(
-  prisma: PrismaClient,
+/**
+ * The actual creation logic, taking a transaction client directly rather
+ * than opening its own transaction — so it can be composed inside a
+ * LARGER transaction (Phase 11's idempotency wrapper opens one that also
+ * writes the IdempotencyRecord row, so both commit or roll back
+ * together — see apps/api/src/modules/idempotency/idempotency.service.ts
+ * and conversions.routes.ts). `createConversion` below is the original,
+ * unchanged public entry point for callers that don't need that
+ * composition (a plain direct call still opens its own transaction here).
+ */
+export async function createConversionInTx(
+  tx: Prisma.TransactionClient,
   actorUserId: string,
   organizationId: string,
   input: CreateConversionInput,
 ) {
-  const click = await prisma.click.findFirst({
+  const click = await tx.click.findFirst({
     where: { id: input.clickId, organizationId },
   });
   if (!click) {
@@ -43,37 +86,43 @@ export async function createConversion(
   }
 
   try {
-    return await prisma.$transaction(async (tx) => {
-      const conversion = await tx.conversion.create({
-        data: {
-          organizationId,
-          campaignId: click.campaignId,
-          trackingLinkId: click.trackingLinkId,
-          clickId: click.id,
-          eventName: input.eventName,
-          value: input.value,
-          currency: input.currency,
-          externalConversionId: input.externalConversionId,
-          occurredAt: input.occurredAt ?? new Date(),
-          metadata: input.metadata as Prisma.InputJsonValue | undefined,
-        },
-      });
-
-      await writeAuditLog(tx, {
+    const conversion = await tx.conversion.create({
+      data: {
         organizationId,
-        actorUserId,
-        action: "conversion.created",
-        entityType: "Conversion",
-        entityId: conversion.id,
-        metadata: {
-          eventName: conversion.eventName,
-          clickId: conversion.clickId,
-          campaignId: conversion.campaignId,
-        },
-      });
-
-      return conversion;
+        campaignId: click.campaignId,
+        trackingLinkId: click.trackingLinkId,
+        clickId: click.id,
+        eventName: input.eventName,
+        value: input.value,
+        currency: input.currency,
+        externalConversionId: input.externalConversionId,
+        occurredAt: input.occurredAt ?? new Date(),
+        metadata: input.metadata as Prisma.InputJsonValue | undefined,
+      },
     });
+
+    await writeAuditLog(tx, {
+      organizationId,
+      actorUserId,
+      action: "conversion.created",
+      entityType: "Conversion",
+      entityId: conversion.id,
+      metadata: {
+        eventName: conversion.eventName,
+        clickId: conversion.clickId,
+        campaignId: conversion.campaignId,
+      },
+    });
+
+    await publishEvent(tx, {
+      organizationId,
+      type: "conversion.created",
+      aggregateType: "Conversion",
+      aggregateId: conversion.id,
+      payload: conversionEventPayload(conversion),
+    });
+
+    return conversion;
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
       throw ApiError.conflict(
@@ -82,6 +131,15 @@ export async function createConversion(
     }
     throw error;
   }
+}
+
+export async function createConversion(
+  prisma: PrismaClient,
+  actorUserId: string,
+  organizationId: string,
+  input: CreateConversionInput,
+) {
+  return prisma.$transaction((tx) => createConversionInTx(tx, actorUserId, organizationId, input));
 }
 
 export async function listConversions(
@@ -221,6 +279,19 @@ async function transitionConversionStatus(
       entityType: "Conversion",
       entityId: conversionId,
       metadata: { from: currentStatus, to: targetStatus },
+    });
+
+    // auditAction is always exactly "conversion.approved" / ".rejected" /
+    // ".reversed" — the same string packages/shared's WEBHOOK_EVENT_TYPES
+    // uses for these events (see approveConversion/rejectConversion/
+    // reverseConversion below), so it doubles as the event type here
+    // rather than introducing a parallel mapping.
+    await publishEvent(tx, {
+      organizationId,
+      type: auditAction as WebhookEventType,
+      aggregateType: "Conversion",
+      aggregateId: conversionId,
+      payload: conversionEventPayload(updated),
     });
 
     return updated;

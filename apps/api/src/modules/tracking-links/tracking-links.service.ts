@@ -14,6 +14,23 @@ import {
   assertDestinationAssignable,
   assertTrackingDomainAssignable,
 } from "../shared/org-scoped-refs.js";
+import { publishEvent } from "../webhooks/outbox.service.js";
+
+function trackingLinkEventPayload(trackingLink: {
+  id: string;
+  slug: string;
+  campaignId: string;
+  status: string;
+  affiliatePartnerId: string | null;
+}): Record<string, unknown> {
+  return {
+    id: trackingLink.id,
+    slug: trackingLink.slug,
+    campaignId: trackingLink.campaignId,
+    status: trackingLink.status,
+    affiliatePartnerId: trackingLink.affiliatePartnerId,
+  };
+}
 
 async function assertCreateReferencesValid(
   prisma: PrismaClient,
@@ -98,14 +115,28 @@ export async function createTrackingLink(
       },
     });
 
+    await publishEvent(tx, {
+      organizationId,
+      type: "tracking_link.created",
+      aggregateType: "TrackingLink",
+      aggregateId: trackingLink.id,
+      payload: trackingLinkEventPayload(trackingLink),
+    });
+
     return trackingLink;
   });
 }
 
-export async function listTrackingLinks(prisma: PrismaClient, organizationId: string) {
+export async function listTrackingLinks(
+  prisma: PrismaClient,
+  organizationId: string,
+  query: { take: number; cursor?: string },
+) {
   return prisma.trackingLink.findMany({
     where: { campaign: { organizationId } },
     orderBy: { createdAt: "desc" },
+    take: query.take,
+    ...(query.cursor ? { skip: 1, cursor: { id: query.cursor } } : {}),
   });
 }
 
@@ -113,6 +144,7 @@ export async function listTrackingLinksForCampaign(
   prisma: PrismaClient,
   organizationId: string,
   campaignId: string,
+  query: { take: number; cursor?: string },
 ) {
   // Confirms the campaign itself is in-org before listing, so an
   // out-of-org campaignId reports 404 rather than a confusing empty list.
@@ -120,6 +152,8 @@ export async function listTrackingLinksForCampaign(
   return prisma.trackingLink.findMany({
     where: { campaignId, campaign: { organizationId } },
     orderBy: { createdAt: "desc" },
+    take: query.take,
+    ...(query.cursor ? { skip: 1, cursor: { id: query.cursor } } : {}),
   });
 }
 
@@ -207,6 +241,14 @@ export async function updateTrackingLink(
         input.affiliatePartnerId !== undefined
           ? { affiliatePartnerId: trackingLink.affiliatePartnerId }
           : undefined,
+    });
+
+    await publishEvent(tx, {
+      organizationId,
+      type: "tracking_link.updated",
+      aggregateType: "TrackingLink",
+      aggregateId: trackingLink.id,
+      payload: trackingLinkEventPayload(trackingLink),
     });
 
     return trackingLink;
