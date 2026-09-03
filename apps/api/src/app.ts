@@ -17,6 +17,7 @@ import { registerAnalyticsRoutes } from "./modules/analytics/analytics.routes.js
 import { registerConversionRoutes } from "./modules/conversions/conversions.routes.js";
 import { registerRoutingRuleRoutes } from "./modules/routing-rules/routing-rules.routes.js";
 import { registerAffiliatePartnerRoutes } from "./modules/affiliate-partners/affiliate-partners.routes.js";
+import { registerReportRoutes } from "./modules/reports/reports.routes.js";
 
 export interface BuildAppOptions {
   env: Env;
@@ -56,6 +57,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
       await registerConversionRoutes(v1);
       await registerRoutingRuleRoutes(v1);
       await registerAffiliatePartnerRoutes(v1);
+      await registerReportRoutes(v1);
     },
     { prefix: "/api/v1" },
   );
