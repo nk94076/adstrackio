@@ -57,6 +57,7 @@ describe("recordClick: enrichment failure isolation", () => {
         userAgent: "Mozilla/5.0 Chrome/119.0",
         ipHash: "deadbeef",
         ip: "203.0.113.1",
+        affiliatePartnerId: null,
         classification: {
           classification: "HUMAN",
           score: 0.5,
@@ -88,6 +89,7 @@ describe("recordClick: enrichment failure isolation", () => {
         userAgent: "Mozilla/5.0 Chrome/119.0",
         ipHash: "deadbeef",
         ip: "203.0.113.1",
+        affiliatePartnerId: null,
         classification: {
           classification: "HUMAN",
           score: 0.5,
@@ -127,6 +129,7 @@ describe("recordClick: enrichment failure isolation", () => {
         userAgent: "Mozilla/5.0 Chrome/119.0",
         ipHash: "deadbeef",
         ip: "203.0.113.1",
+        affiliatePartnerId: null,
         classification: {
           classification: "HUMAN",
           score: 0.5,
@@ -165,6 +168,7 @@ describe("recordClick: enrichment failure isolation", () => {
         userAgent: "Mozilla/5.0 (iPhone) Chrome/119.0",
         ipHash: "deadbeef",
         ip: "203.0.113.1",
+        affiliatePartnerId: null,
         classification: {
           classification: "BOT",
           score: 0.9,
@@ -221,6 +225,7 @@ describe("recordClick: geo lookup does not block the redirect critical path", ()
         userAgent: "Mozilla/5.0 Chrome/119.0",
         ipHash: "deadbeef",
         ip: "203.0.113.1",
+        affiliatePartnerId: null,
         classification: {
           classification: "HUMAN",
           score: 0.5,
@@ -270,6 +275,7 @@ describe("recordClick: geo lookup does not block the redirect critical path", ()
         userAgent: "Mozilla/5.0 Chrome/119.0",
         ipHash: "deadbeef",
         ip: "203.0.113.1",
+        affiliatePartnerId: null,
         classification: {
           classification: "HUMAN",
           score: 0.5,

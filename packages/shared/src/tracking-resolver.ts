@@ -41,6 +41,12 @@ export interface TrackingResolutionResult {
    * packages/shared/src/routing-rules.ts's resolveRoutingDecision, which
    * consumes this list. Empty for a campaign with no rules configured. */
   routingRules: RoutingRuleInput[];
+  /** The single AffiliatePartner this tracking link deterministically
+   * attributes to (Phase 9: Affiliate/Partner System), or null for an
+   * ordinary non-affiliate link — see TrackingLink.affiliatePartnerId.
+   * apps/tracker copies this straight onto the Click row it writes; there
+   * is no request-supplied value that can override it. */
+  affiliatePartnerId: string | null;
 }
 
 /** Why resolution failed — lets callers map to the right HTTP response

@@ -9,6 +9,7 @@ import type { CreateTrackingLinkInput, UpdateTrackingLinkInput } from "@adstrack
 import { writeAuditLog } from "../audit-logs/audit-log.service.js";
 import { getCampaign } from "../campaigns/campaigns.service.js";
 import {
+  assertAffiliatePartnerAssignable,
   assertCampaignAcceptsNewOrReactivatedLinks,
   assertDestinationAssignable,
   assertTrackingDomainAssignable,
@@ -17,11 +18,20 @@ import {
 async function assertCreateReferencesValid(
   prisma: PrismaClient,
   organizationId: string,
-  input: { campaignId: string; trackingDomainId: string; destinationId: string },
+  input: {
+    campaignId: string;
+    trackingDomainId: string;
+    destinationId: string;
+  },
 ) {
-  // Order matters for a clear error message: campaign existence/status
-  // first (a link cannot exist without a valid campaign to belong to),
-  // then the domain/destination it will actually use.
+  // Campaign existence/status first (a link cannot exist without a valid
+  // campaign to belong to), then the domain/destination it will actually
+  // use. The affiliate partner check (Phase 9) is deliberately NOT done
+  // here: it must run inside the same transaction that writes the
+  // TrackingLink row, locking the AffiliatePartner row first — see
+  // assertAffiliatePartnerAssignable's doc comment (org-scoped-refs.ts)
+  // for why a pre-transaction check here was a CTO-flagged race (an
+  // ARCHIVED-in-flight partner could still receive a new attribution).
   await assertCampaignAcceptsNewOrReactivatedLinks(prisma, organizationId, input.campaignId);
   await assertTrackingDomainAssignable(prisma, organizationId, input.trackingDomainId);
   await assertDestinationAssignable(prisma, organizationId, input.destinationId);
@@ -50,6 +60,19 @@ export async function createTrackingLink(
   }
 
   return prisma.$transaction(async (tx) => {
+    // Locks the AffiliatePartner row and re-verifies it (org, ARCHIVED,
+    // roster) inside this same transaction, atomically with the write
+    // below — see assertAffiliatePartnerAssignable's doc comment for why
+    // this must not run before the transaction starts.
+    if (input.affiliatePartnerId) {
+      await assertAffiliatePartnerAssignable(
+        tx,
+        organizationId,
+        input.campaignId,
+        input.affiliatePartnerId,
+      );
+    }
+
     const trackingLink = await tx.trackingLink.create({
       data: {
         campaignId: input.campaignId,
@@ -57,6 +80,7 @@ export async function createTrackingLink(
         destinationId: input.destinationId,
         slug: input.slug,
         status: input.status,
+        affiliatePartnerId: input.affiliatePartnerId,
         metadata: input.metadata as Prisma.InputJsonValue | undefined,
       },
     });
@@ -67,7 +91,11 @@ export async function createTrackingLink(
       action: "tracking_link.created",
       entityType: "TrackingLink",
       entityId: trackingLink.id,
-      metadata: { slug: trackingLink.slug, campaignId: trackingLink.campaignId },
+      metadata: {
+        slug: trackingLink.slug,
+        campaignId: trackingLink.campaignId,
+        affiliatePartnerId: trackingLink.affiliatePartnerId,
+      },
     });
 
     return trackingLink;
@@ -138,17 +166,33 @@ export async function updateTrackingLink(
   trackingLinkId: string,
   input: UpdateTrackingLinkInput,
 ) {
-  await getTrackingLink(prisma, organizationId, trackingLinkId);
+  const existing = await getTrackingLink(prisma, organizationId, trackingLinkId);
 
   if (input.destinationId) {
     await assertDestinationAssignable(prisma, organizationId, input.destinationId);
   }
 
   return prisma.$transaction(async (tx) => {
+    // null explicitly clears attribution (always allowed, no lock needed);
+    // a string value must be locked and re-verified (org, ARCHIVED,
+    // roster) inside this same transaction, atomically with the write
+    // below; undefined leaves the current attribution untouched. See
+    // assertAffiliatePartnerAssignable's doc comment for why this check
+    // must not run before the transaction starts.
+    if (input.affiliatePartnerId) {
+      await assertAffiliatePartnerAssignable(
+        tx,
+        organizationId,
+        existing.campaignId,
+        input.affiliatePartnerId,
+      );
+    }
+
     const trackingLink = await tx.trackingLink.update({
       where: { id: trackingLinkId },
       data: {
         destinationId: input.destinationId,
+        affiliatePartnerId: input.affiliatePartnerId,
         metadata: input.metadata as Prisma.InputJsonValue | undefined,
       },
     });
@@ -159,6 +203,10 @@ export async function updateTrackingLink(
       action: "tracking_link.updated",
       entityType: "TrackingLink",
       entityId: trackingLink.id,
+      metadata:
+        input.affiliatePartnerId !== undefined
+          ? { affiliatePartnerId: trackingLink.affiliatePartnerId }
+          : undefined,
     });
 
     return trackingLink;

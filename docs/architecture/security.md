@@ -525,6 +525,128 @@ section covers its security-relevant properties specifically.
   a compromised or careless `MEMBER` account can draft/edit rules but
   cannot single-handedly put one into production traffic.
 
+## Affiliate / Partner System (apps/api + apps/tracker, Phase 9)
+
+Full design rationale is in `docs/architecture/affiliate-partners.md`;
+this section covers its security-relevant properties specifically.
+
+- **`organizationId` can never be client-supplied.** Every affiliate-
+  partner endpoint takes it only from the authenticated,
+  membership-checked URL path; `createAffiliatePartnerSchema`/
+  `updateAffiliatePartnerSchema` (`packages/validation/src/affiliate-partners.ts`)
+  simply have no `organizationId`, `createdBy`, or `affiliatePartnerId`
+  field to accept, so a client that includes one in the request body has
+  it silently stripped by Zod, never honored — covered by an explicit
+  mass-assignment test.
+- **A partner from Organization A can never be assigned to Organization
+  B's campaign, in either direction.** The service layer verifies the
+  campaign belongs to the URL's organization (`getCampaign`) and, under
+  the same row lock, that the partner belongs to the same organization
+  before creating a roster row; a mismatch 400s/404s before any write.
+  Backstopped at the database level by
+  `enforce_campaign_affiliate_partner_organization` (migration
+  `20260902190000_affiliate_partner_system`), which re-derives and
+  verifies both organizations at insert time — the same pattern Phase 7/8
+  established for `Conversion`/`RoutingRule` attribution — and forbids
+  changing any of `campaignId`/`affiliatePartnerId`/`organizationId`
+  afterward. Verified both by service-layer integration tests (cross-org
+  read, cross-org assign both directions, cross-org route access) and by
+  a dedicated test that attempts the cross-org insert directly via Prisma,
+  bypassing the service layer entirely, to prove the database boundary
+  holds independently of application code.
+- **A client cannot forge Click or Conversion attribution.** `Click.affiliatePartnerId`
+  is written only by `apps/tracker`'s `recordClick`, copied from
+  `TrackingResolver`'s already-resolved, server-controlled result — there
+  is no query parameter, header, or body field on the tracker's redirect
+  route that can set or override it (covered by a dedicated test sending
+  a forged `affiliatePartnerId` query parameter and asserting it has no
+  effect). `createConversionSchema` has no `affiliatePartnerId` field at
+  all, so conversion creation cannot specify one even if a client
+  includes it in the request body — attribution is derived exclusively by
+  joining `Conversion.clickId -> Click.affiliatePartnerId` at read time.
+  `Click.affiliatePartnerId` is additionally immutable after creation
+  (`enforce_click_affiliate_partner_immutable`, a lookup-free
+  `UPDATE`-only trigger — see "Tracker performance" in
+  `docs/architecture/affiliate-partners.md` for why this trigger is
+  deliberately cheaper than the insert-time check other Phase 9 tables
+  get), verified both by application-level immutability (no update path
+  exists) and a direct-database test that attempts the mutation via
+  Prisma, bypassing the service layer.
+- **Archived partners cannot receive new assignments — at either level —
+  but historical attribution is never deleted or nulled out.**
+  `assignAffiliatePartnerToCampaign` (campaign roster) and
+  `assertAffiliatePartnerAssignable` (tracking-link attribution, called
+  from inside `createTrackingLink`/`updateTrackingLink`'s own transaction)
+  each lock the partner row and 409 if its status is `ARCHIVED` before
+  writing. The tracking-link path was a CTO review finding on PR #10: it
+  originally validated the partner (organization + roster membership, but
+  not `ARCHIVED` status at all) against the top-level `PrismaClient`
+  *before* the transaction that wrote the `TrackingLink` row — a
+  check-then-act race under which a concurrent `archiveAffiliatePartner`
+  could commit between the check and the write, and even the
+  non-concurrent case could slip an already-archived partner through.
+  Fixed by moving the check inside the same transaction and locking the
+  same `AffiliatePartner` row the other two lock sites already lock (see
+  below). Archiving a partner touches no other table regardless — no
+  cascade, no cleanup job — so a `Click`/`Conversion`/`TrackingLink`/
+  `CampaignAffiliatePartner` row that already references an archived
+  partner keeps that reference exactly as before, and `GET
+  .../affiliate-partners/:partnerId` continues to return it. Covered by
+  dedicated tests that archive a partner with an existing assignment and
+  attributed click/tracking-link, then re-read all of them.
+- **Status can never be forced through a generic update endpoint** — the
+  same convention Campaign/TrackingLink/Conversion/RoutingRule already
+  established: no `PATCH` accepts a `status` field (silently ignored, not
+  rejected); only the explicit `POST .../activate`/`.../pause`/
+  `.../archive` endpoints (no request body) change it.
+- **Lifecycle, assignment, and attribution concurrency all use
+  `SELECT ... FOR UPDATE` row locking on the same `AffiliatePartner` row.**
+  `transitionAffiliatePartnerStatus`, `assignAffiliatePartnerToCampaign`,
+  and (per the fix above) `assertAffiliatePartnerAssignable` all lock the
+  affected `AffiliatePartner` row before deciding an outcome, so: (a) two
+  concurrent calls requesting the *same* target lifecycle state are both
+  idempotent successes, never a spurious `409`; (b) a concurrent
+  `archive` and a concurrent `assign` (campaign roster) or `attribute`
+  (tracking link) on the same partner correctly serialize — whichever
+  transaction commits first is authoritative, and the loser observes that
+  committed result rather than a stale read, never producing an active
+  assignment or attribution on an archived partner. Covered by dedicated
+  concurrent activate+activate, pause+pause, activate+pause,
+  duplicate-assignment, archive+assignment, and
+  archive-vs-tracking-link-attribution (a deterministic sequential proof
+  plus concurrent create and update races) integration tests.
+- **Duplicate assignment is idempotent, not an error.** A second
+  concurrent or sequential "assign partner X to campaign Y" call, when X
+  is already assigned to Y, returns the existing row rather than a `409`
+  — the real unique constraint (`@@unique([campaignId,
+  affiliatePartnerId])`) still prevents a duplicate *row*, but the API
+  itself never surfaces that as a client-facing error for a same-target
+  retry.
+- **The tracker's redirect hot path gains zero new synchronous database
+  or network calls.** `Click.affiliatePartnerId` is populated from data
+  `PrismaTrackingResolver` already fetches via its existing single
+  `findUnique` query — no new query is added. This was a deliberate
+  design constraint, not an incidental property: an insert-time
+  cross-table verification trigger (the pattern used for
+  `Conversion`/`CampaignAffiliatePartner`/`TrackingLink`) was explicitly
+  rejected for `Click` specifically because `Click` writes sit on this
+  hot path; only the cheap, lookup-free immutability trigger applies to
+  it.
+- **Affiliate functionality cannot override `BOT -> SAFE_PAGE` or
+  introduce a hidden/partner-controlled redirect destination.** Partner
+  attribution is computed independently of, and after, the existing
+  Phase 5/8 routing decision — there is no field anywhere in this phase's
+  schema capable of encoding a redirect URL, and no code path where
+  affiliate assignment influences `resolveRoutingDecision`. The visible
+  `redirection_url` remains the sole source of the `TARGET` outcome's
+  destination for an affiliate-attributed link exactly as for any other
+  link, covered by a dedicated tracker test.
+- **RBAC mirrors Campaign's own asymmetry.** `VIEWER` reads; `MEMBER`
+  creates/updates/assigns/unassigns; `ADMIN` is required for
+  activate/pause/archive — a compromised or careless `MEMBER` account can
+  manage partner records and campaign rosters but cannot single-handedly
+  change a partner's lifecycle state.
+
 ## Click Analytics (apps/api, Phase 4)
 
 Full design rationale is in `docs/architecture/click-analytics.md`; this

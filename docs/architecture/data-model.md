@@ -26,6 +26,9 @@ so the roadmap this schema was designed against is explicit.
 | `BotEvent` | A bot-detection verdict for a click | IMPLEMENTED (Phase 3, integrated into routing Phase 5) — written by the tracker via the explicitly-provisional, multi-signal `HeuristicBotDetectionEngine`; not a production-grade or ML-based detector (see `docs/architecture/bot-detection.md`) |
 | `ReferralConfiguration` | How referral/attribution is labeled for a campaign | IMPLEMENTED, including the approval gate (app + database level) |
 | `ReferralProof` | Evidence supporting a custom partner attribution config | IMPLEMENTED |
+| `RoutingRule` | A campaign-scoped, priority-ordered TARGET/SAFE_PAGE/BLOCK rule | IMPLEMENTED (Phase 8) — composes rather than duplicates Phase 5's bot-traffic policy (see `docs/architecture/rules-routing.md`) |
+| `AffiliatePartner` | A real business entity an organization tracks affiliate traffic for | IMPLEMENTED (Phase 9) — explicit PENDING/ACTIVE/PAUSED/ARCHIVED lifecycle (see `docs/architecture/affiliate-partners.md`) |
+| `CampaignAffiliatePartner` | Join table: which partners may work with a campaign | IMPLEMENTED (Phase 9) |
 | `AuditLog` | Append-only record of administrative actions | IMPLEMENTED |
 
 ## Identity & organizations
@@ -295,6 +298,60 @@ Indexes: `@@index([campaignId, status, priority])` (the exact shape the
 tracker's own rule-fetch query needs — filter by campaign + `ACTIVE`
 status, sorted by priority) and `@@index([organizationId])` (dashboard/API
 listing and IDOR-check queries).
+
+## Affiliate partners and attribution (Phase 9)
+
+`AffiliatePartner` follows the same shape as every other organization-owned
+entity in this schema: `organizationId` (`NOT NULL`, `onDelete: Cascade`),
+a closed `AffiliatePartnerStatus` enum (`PENDING`/`ACTIVE`/`PAUSED`/
+`ARCHIVED`, default `PENDING`) following the same explicit,
+service-enforced lifecycle pattern as `Campaign.status`/
+`TrackingLink.status`, and `@@unique([organizationId, externalId])` —
+reusing `Conversion.externalConversionId`'s exact NULL-is-distinct
+uniqueness precedent so `externalId` is unique per organization, not
+globally, and any number of partners may omit it entirely.
+
+Assignment is deliberately split into two different mechanisms rather than
+one, full rationale in `docs/architecture/affiliate-partners.md`:
+
+- **`CampaignAffiliatePartner`** — the one join table this phase adds,
+  `@@unique([campaignId, affiliatePartnerId])`, expressing "this partner
+  may work with this campaign." `organizationId` is stored directly
+  (denormalized, like `Conversion`'s own campaign/tracking-link columns)
+  and re-derived/verified by `enforce_campaign_affiliate_partner_organization`
+  at insert time, mirroring `enforce_conversion_click_attribution`'s
+  pattern (Phase 7).
+- **`TrackingLink.affiliatePartnerId`** — a plain nullable foreign key,
+  not a second join table, giving each tracking link exactly one
+  deterministic attributed partner (or none). Validated at write time to
+  reference a partner already on the link's own campaign's
+  `CampaignAffiliatePartner` roster, backstopped by
+  `enforce_tracking_link_affiliate_partner`.
+- **`Click.affiliatePartnerId`** — a denormalized snapshot copied from the
+  resolving `TrackingLink.affiliatePartnerId` by `apps/tracker`'s
+  `recordClick`, at zero extra query cost (`PrismaTrackingResolver`
+  already fetches the `TrackingLink` row). Immutable after creation
+  (`enforce_click_affiliate_partner_immutable`) — deliberately a
+  lookup-free, `UPDATE`-only trigger, unlike the insert-time cross-table
+  check `Conversion`/`CampaignAffiliatePartner`/`TrackingLink` each get,
+  since `Click` writes sit on the tracker's redirect hot path where an
+  extra synchronous cross-table check is not acceptable — see
+  `docs/architecture/affiliate-partners.md#tracker-performance`.
+  Indexed `@@index([affiliatePartnerId, occurredAt])`, matching the shape
+  `getAffiliatePartnerPerformance`'s analytics query needs.
+
+`Conversion` gains **no new column** for partner attribution — per Phase
+9's explicit design instruction, "which partner generated this
+conversion" is answered by joining through `Conversion.clickId ->
+Click.affiliatePartnerId` at query time, not duplicating the value onto
+`Conversion` itself. This keeps `Click` the single source of truth for
+attribution, consistent with Phase 7's existing "Click is authoritative,
+Conversion derives from it" design.
+
+Archiving a partner touches no other table — no cascade, no nulling-out of
+existing `CampaignAffiliatePartner`/`TrackingLink`/`Click` references — so
+historical attribution is preserved by simply never being touched, not by
+any special-cased "preserve on archive" logic.
 
 ## Referral configuration & proof — the approval-gated model
 

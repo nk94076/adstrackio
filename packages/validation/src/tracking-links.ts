@@ -21,6 +21,13 @@ export const createTrackingLinkSchema = z.object({
     .max(80)
     .regex(slugPattern, "Slug must be lowercase letters, numbers and hyphens only"),
   status: creatableTrackingLinkStatusSchema.default("ACTIVE"),
+  /// The single AffiliatePartner this link's clicks deterministically
+  /// attribute to (Phase 9: Affiliate/Partner System) — optional; omitted
+  /// or null means an ordinary non-affiliate link. Service layer verifies
+  /// the referenced partner is currently assigned to this link's own
+  /// campaign, backstopped by a database trigger — see
+  /// docs/architecture/affiliate-partners.md.
+  affiliatePartnerId: z.string().cuid().optional(),
   metadata: z.record(z.unknown()).optional(),
 });
 export type CreateTrackingLinkInput = z.infer<typeof createTrackingLinkSchema>;
@@ -42,6 +49,11 @@ export type CreateTrackingLinkForCampaignInput = z.infer<
 // explicit POST .../activate, .../pause, .../archive endpoints.
 export const updateTrackingLinkSchema = z.object({
   destinationId: z.string().cuid().optional(),
+  /// Nullable so an existing attribution can be explicitly cleared
+  /// (set to null) as well as changed to a different partner — omitted
+  /// entirely leaves the current attribution untouched, matching the
+  /// rest of this schema's partial-update convention.
+  affiliatePartnerId: z.string().cuid().nullable().optional(),
   metadata: z.record(z.unknown()).optional(),
 });
 export type UpdateTrackingLinkInput = z.infer<typeof updateTrackingLinkSchema>;

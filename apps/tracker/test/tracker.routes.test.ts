@@ -349,6 +349,94 @@ describe("click logging", () => {
   });
 });
 
+describe("affiliate partner attribution (Phase 9)", () => {
+  it("a click through a link attributed to a partner carries that partner's id", async () => {
+    const fixture = await createTrackerFixture({ withAffiliatePartner: true });
+    expect(fixture.affiliatePartnerId).toBeTruthy();
+
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent("https://example.com/offer")}`,
+    );
+    expect(response.statusCode).toBe(302);
+
+    const click = await prisma.click.findFirstOrThrow({
+      where: { trackingLinkId: fixture.trackingLinkId },
+    });
+    expect(click.affiliatePartnerId).toBe(fixture.affiliatePartnerId);
+  });
+
+  it("a click through an ordinary (non-affiliate) link has a null affiliatePartnerId", async () => {
+    const fixture = await createTrackerFixture();
+    expect(fixture.affiliatePartnerId).toBeNull();
+
+    await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent("https://example.com/offer")}`,
+    );
+
+    const click = await prisma.click.findFirstOrThrow({
+      where: { trackingLinkId: fixture.trackingLinkId },
+    });
+    expect(click.affiliatePartnerId).toBeNull();
+  });
+
+  it("cannot be forced to attribute to an arbitrary partner via a client-supplied query parameter", async () => {
+    const fixture = await createTrackerFixture();
+    const forgedPartnerId = "cl000000000000000000000forged";
+
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent("https://example.com/offer")}&affiliatePartnerId=${forgedPartnerId}`,
+    );
+    expect(response.statusCode).toBe(302);
+
+    const click = await prisma.click.findFirstOrThrow({
+      where: { trackingLinkId: fixture.trackingLinkId },
+    });
+    expect(click.affiliatePartnerId).toBeNull();
+  });
+
+  it("does not change the visible transparent redirect destination for an affiliate-attributed link", async () => {
+    const fixture = await createTrackerFixture({ withAffiliatePartner: true });
+    const target = "https://example.com/exact-visible-destination";
+
+    const response = await hit(fixture.hostname, fixture.slug, `?redirection_url=${encodeURIComponent(target)}`);
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe(target);
+  });
+
+  it("BOT traffic through an affiliate-attributed link still routes to SAFE_PAGE, never TARGET — affiliate attribution never overrides bot policy", async () => {
+    const fixture = await createTrackerFixture({
+      withAffiliatePartner: true,
+      safePageUrl: "https://safe.example.com/",
+    });
+    const target = "https://example.com/offer";
+
+    const response = await hit(
+      fixture.hostname,
+      fixture.slug,
+      `?redirection_url=${encodeURIComponent(target)}`,
+      { "user-agent": BOT_UA },
+    );
+
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe("https://safe.example.com/");
+
+    // Attribution still happens (it's independent of the routing decision)
+    // even though this click was routed to the Safe Page, not the
+    // affiliate's intended destination.
+    const click = await prisma.click.findFirstOrThrow({
+      where: { trackingLinkId: fixture.trackingLinkId },
+    });
+    expect(click.affiliatePartnerId).toBe(fixture.affiliatePartnerId);
+    expect(click.botClassification).toBe("BOT");
+  });
+});
+
 describe("click ID", () => {
   it("generates a cryptographically random, non-sequential UUID per click", async () => {
     const fixture = await createTrackerFixture();

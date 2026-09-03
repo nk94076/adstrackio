@@ -42,6 +42,10 @@ const baseAnalyticsFilterSchema = z.object({
   campaignId: z.string().cuid().optional(),
   trackingLinkId: z.string().cuid().optional(),
   trackingDomainId: z.string().cuid().optional(),
+  /** Phase 9: Affiliate/Partner System — scopes a query down to one
+   * partner's attributed traffic. Optional and additive; every existing
+   * analytics endpoint accepts it without changing behavior when omitted. */
+  affiliatePartnerId: z.string().cuid().optional(),
 });
 
 /**
