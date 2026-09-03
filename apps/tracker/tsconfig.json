@@ -4,7 +4,20 @@
     "outDir": "dist",
     "rootDir": "src",
     "module": "NodeNext",
-    "moduleResolution": "NodeNext"
+    "moduleResolution": "NodeNext",
+    // apps/tracker is a terminal Node process (`node dist/index.js`),
+    // never imported by another package — nothing consumes its .d.ts
+    // output, so there is no reason to pay for declaration emit here
+    // (unlike the workspace packages under packages/*, which genuinely
+    // are consumed elsewhere and keep it). This also avoids TS2742
+    // ("cannot be named without a reference to ...") on any inferred
+    // return type that touches @adstrackio/database's Prisma-generated
+    // client, whose custom output path (see
+    // packages/database/prisma/schema.prisma) is outside node_modules.
+    // Harmless for `tsc --noEmit` (typecheck), which never emits
+    // declarations regardless of this setting.
+    "declaration": false,
+    "declarationMap": false
   },
   "include": ["src"]
 }

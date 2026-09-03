@@ -3,7 +3,14 @@
   "compilerOptions": {
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "noEmit": true
+    "noEmit": true,
+    // TS2742 ("cannot be named without a reference to ...") is raised
+    // based on the `declaration` setting even under `--noEmit` — see
+    // tsconfig.build.json's matching override for why apps/api (a
+    // terminal Node process, never imported by another package) has no
+    // reason to enable declaration emit at all.
+    "declaration": false,
+    "declarationMap": false
   },
   "include": ["src", "test"]
 }
