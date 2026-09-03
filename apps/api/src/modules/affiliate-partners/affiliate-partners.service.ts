@@ -4,12 +4,30 @@ import {
   InvalidAffiliatePartnerStatusTransitionError,
   assertValidAffiliatePartnerStatusTransition,
   type AffiliatePartnerStatus,
+  type WebhookEventType,
 } from "@adstrackio/shared";
 import type {
   CreateAffiliatePartnerInput,
   UpdateAffiliatePartnerInput,
 } from "@adstrackio/validation";
 import { writeAuditLog } from "../audit-logs/audit-log.service.js";
+import { publishEvent } from "../webhooks/outbox.service.js";
+
+function affiliatePartnerEventPayload(partner: {
+  id: string;
+  name: string;
+  status: string;
+  externalId: string | null;
+  email: string | null;
+}): Record<string, unknown> {
+  return {
+    id: partner.id,
+    name: partner.name,
+    status: partner.status,
+    externalId: partner.externalId,
+    email: partner.email,
+  };
+}
 
 /**
  * Affiliate partner control plane (Phase 9: Affiliate/Partner System) — see
@@ -57,6 +75,14 @@ export async function createAffiliatePartner(
         entityType: "AffiliatePartner",
         entityId: partner.id,
         metadata: { name: partner.name, status: partner.status },
+      });
+
+      await publishEvent(tx, {
+        organizationId,
+        type: "affiliate_partner.created",
+        aggregateType: "AffiliatePartner",
+        aggregateId: partner.id,
+        payload: affiliatePartnerEventPayload(partner),
       });
 
       return partner;
@@ -117,6 +143,14 @@ export async function updateAffiliatePartner(
         action: "affiliate_partner.updated",
         entityType: "AffiliatePartner",
         entityId: partner.id,
+      });
+
+      await publishEvent(tx, {
+        organizationId,
+        type: "affiliate_partner.updated",
+        aggregateType: "AffiliatePartner",
+        aggregateId: partner.id,
+        payload: affiliatePartnerEventPayload(partner),
       });
 
       return partner;
@@ -195,6 +229,17 @@ async function transitionAffiliatePartnerStatus(
       entityType: "AffiliatePartner",
       entityId: affiliatePartnerId,
       metadata: { from: currentStatus, to: targetStatus },
+    });
+
+    // auditAction is always exactly "affiliate_partner.activated"/
+    // ".paused"/".archived" — the same strings
+    // packages/shared/src/webhook-events.ts uses for these events.
+    await publishEvent(tx, {
+      organizationId,
+      type: auditAction as WebhookEventType,
+      aggregateType: "AffiliatePartner",
+      aggregateId: affiliatePartnerId,
+      payload: affiliatePartnerEventPayload(updated),
     });
 
     return updated;
