@@ -21,16 +21,19 @@ generator client {
   // `pnpm deploy` re-resolve from the content-addressable store.
   output = "../generated/client"
   // "native" generates the engine for wherever `prisma generate` runs
-  // (local dev, CI). The two "linux-musl*" targets generate the engine
-  // binaries for the actual production runtime — apps/api/Dockerfile
-  // and apps/tracker/Dockerfile build FROM node:20-alpine, which uses
-  // musl libc (not the glibc "debian-openssl-3.0.x" engine "native"
-  // alone would produce) — covering both common Docker platforms
-  // (amd64 and arm64). Without this, only the "native" (glibc) engine
-  // is generated, which cannot run on the Alpine-based production image
-  // at all — a separate latent bug from the workspace-package
-  // resolution issue this phase otherwise fixes.
-  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "linux-musl-arm64-openssl-3.0.x"]
+  // (local dev, CI, and now also the production build stage — see
+  // apps/api/Dockerfile / apps/tracker/Dockerfile's "why node:20-slim,
+  // not node:20-alpine" comment for why production moved off musl
+  // entirely rather than continuing to chase Alpine/musl OpenSSL-3
+  // detection reliability). "debian-openssl-3.0.x" is listed
+  // explicitly, redundantly with what "native" already produces on
+  // this glibc/Debian build stage, for the same reason Phase 13.3 once
+  // listed the musl targets explicitly: determinism — this must not
+  // silently regress to depending on "native" auto-resolving correctly.
+  // "linux-arm64-openssl-3.0.x" keeps arm64 Docker hosts working too
+  // (e.g. Apple Silicon dev machines, arm64 cloud VMs), matching the
+  // amd64/arm64 coverage the now-removed musl targets used to provide.
+  binaryTargets = ["native", "debian-openssl-3.0.x", "linux-arm64-openssl-3.0.x"]
 }
 
 datasource db {

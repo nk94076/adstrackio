@@ -55,9 +55,50 @@
 # EVERY `pnpm install` links workspace packages, including for local
 # development — out of scope for a production-packaging fix); the
 # legacy deploy implementation works without it.
+#
+# Why node:20-slim (Debian), not node:20-alpine (musl):
+# This image previously built FROM node:20-alpine. In production that
+# repeatedly produced a Prisma query engine mismatch: Alpine's minimal
+# image doesn't ship the `openssl` package, so Prisma's own OpenSSL
+# version detection — both when `prisma generate` resolves what
+# "native" means during the build stage below, and again when
+# @prisma/client picks an engine to load at container startup — can
+# silently fall back to identifying the platform as the legacy bare
+# "linux-musl" target (an engine linked against OpenSSL 1.1.x, which
+# this image never had and was never going to install, since that
+# would mean shipping a known-EOL OpenSSL release as a workaround)
+# instead of "linux-musl-openssl-3.0.x", crashing with
+# `PrismaClientInitializationError: Error loading shared library
+# libssl.so.1.1`. Explicit `binaryTargets` and a pinned
+# PRISMA_QUERY_ENGINE_LIBRARY (both still present below) narrow this,
+# but musl/OpenSSL-3 detection has proven persistently fragile across
+# several rounds of fixing it directly. node:20-slim (Debian) uses
+# Prisma's "debian-openssl-3.0.x" engine target — by far Prisma's most
+# mature, most widely used engine target, and the one every quality
+# gate and local dev/test run in this repository has already been
+# exercising successfully throughout (this is a glibc/Debian-family
+# sandbox). This also removes an entire class of native-addon
+# compatibility risk beyond just Prisma: musl libc is a recurring
+# source of subtle breakage for OTHER native Node addons this
+# workspace depends on (e.g. argon2, used for password hashing) that
+# simply doesn't exist under glibc. The image is somewhat larger than
+# Alpine; that tradeoff is accepted deliberately for reliability, per
+# an explicit production-fix requirement to make exactly this
+# architecture call if it's materially safer than continuing to fight
+# Alpine/musl OpenSSL detection.
 
-FROM node:20-alpine AS build
+FROM node:20-slim AS build
 RUN corepack enable
+# OpenSSL 3 + CA certificates, explicit rather than assumed present in
+# the slim base — `prisma generate`'s own platform/OpenSSL-version
+# detection (which decides what "native" resolves to, i.e. what engine
+# gets generated for local dev/CI) needs the real `openssl` package on
+# disk to detect correctly, not just whatever OpenSSL Node.js itself
+# happens to be statically/dynamically linked against. ca-certificates
+# is needed for this app's own outbound HTTPS calls (webhook delivery).
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 WORKDIR /repo
 
 # pnpm 10 prompts for confirmation before removing/recreating the
@@ -87,30 +128,31 @@ ENTRYPOINT ["pnpm", "exec", "prisma", "migrate", "deploy"]
 FROM build AS deployed
 RUN pnpm --filter @adstrackio/api deploy --prod --legacy /deploy
 
-FROM node:20-alpine AS runtime
+FROM node:20-slim AS runtime
 ENV NODE_ENV=production
+# OpenSSL 3 + CA certificates in the runtime image too — this is what
+# the deployed Prisma query engine (libquery_engine-debian-openssl-3.0.x.so.node,
+# pinned explicitly below) dynamically links against at container
+# startup, and what this app's own outbound HTTPS calls need.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 # Pin the Prisma query engine explicitly rather than letting
-# @prisma/client auto-detect it at startup. On this exact base image
-# (node:20-alpine, musl libc, OpenSSL 3), Prisma's own runtime platform
-# detection has been observed to identify itself as the legacy bare
-# "linux-musl" target (an OpenSSL-1.1-linked engine Prisma stopped
-# building this Docker image against once OpenSSL 3 support was added)
-# instead of "linux-musl-openssl-3.0.x", causing
-# `Error loading shared library libssl.so.1.1: No such file or
-# directory` — libssl.so.1.1 was never installed on this image and
-# never will be; that's not a dependency this image is missing, it's
-# Prisma choosing the wrong one of the several engines
-# packages/database/prisma/schema.prisma's `binaryTargets` already
-# generates and pnpm deploy already ships (see the "deployed" stage
-# above). Setting PRISMA_QUERY_ENGINE_LIBRARY bypasses that detection
-# entirely and always loads the correct, already-present OpenSSL-3
-# musl engine. This is the x86_64 (amd64) engine, matching this
-# image's actual VPS production architecture; an arm64 build of this
-# image would need the sibling
-# libquery_engine-linux-musl-arm64-openssl-3.0.x.so.node file instead
-# (also generated, not shipped-but-unused — see binaryTargets).
-ENV PRISMA_QUERY_ENGINE_LIBRARY=/app/node_modules/@adstrackio/database/generated/client/libquery_engine-linux-musl-openssl-3.0.x.so.node
-RUN addgroup -S adstrackio && adduser -S adstrackio -G adstrackio
+# @prisma/client auto-detect it at startup — belt-and-suspenders on
+# top of the node:20-slim switch above and the explicit `openssl`
+# package install, not a substitute for either: even with the correct
+# engine reliably generated and the right system libraries present,
+# there's no reason to make container startup depend on Prisma's own
+# platform-detection code path succeeding when the file to load can
+# just be named directly. This is the x86_64 (amd64) engine, matching
+# this image's actual VPS production architecture; an arm64 build of
+# this image would need the sibling
+# libquery_engine-linux-arm64-openssl-3.0.x.so.node file instead (also
+# generated, not shipped-but-unused — see
+# packages/database/prisma/schema.prisma's binaryTargets).
+ENV PRISMA_QUERY_ENGINE_LIBRARY=/app/node_modules/@adstrackio/database/generated/client/libquery_engine-debian-openssl-3.0.x.so.node
+RUN groupadd --system adstrackio \
+  && useradd --system --gid adstrackio --no-create-home --shell /usr/sbin/nologin adstrackio
 WORKDIR /app
 COPY --chown=adstrackio:adstrackio --from=deployed /deploy /app
 USER adstrackio

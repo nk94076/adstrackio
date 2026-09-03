@@ -2,10 +2,14 @@
 //
 // Verifies that production Docker packaging (apps/api/Dockerfile,
 // apps/tracker/Dockerfile) actually ships a working Prisma query engine
-// for the real production runtime (node:20-alpine, musl libc, OpenSSL 3)
+// for the real production runtime (node:20-slim, Debian glibc, OpenSSL 3)
 // — not just that `pnpm build`/`pnpm typecheck` pass, which say nothing
 // about what `pnpm deploy` puts in the final image or which engine file
-// the running container picks at startup.
+// the running container picks at startup. It also fails the build if the
+// deployed artifact contains a legacy OpenSSL-1.1 (bare "linux-musl")
+// engine, which would crash `PrismaClientInitializationError: Error
+// loading shared library libssl.so.1.1` regardless of which engine gets
+// picked at runtime.
 //
 // Prerequisite: `pnpm db:generate` must already have been run (this
 // script does not do it itself — same as the Dockerfiles, which run it
@@ -21,20 +25,30 @@
 // hermetic unit-test run).
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
-// The engine actually needed by the real VPS: node:20-alpine on x86_64.
-// See packages/database/prisma/schema.prisma's `binaryTargets` comment
-// and apps/{api,tracker}/Dockerfile's PRISMA_QUERY_ENGINE_LIBRARY
-// comment for the full "why" — this must never regress back to the
-// legacy bare "linux-musl" (OpenSSL 1.1) engine, which crashes
-// production with `Error loading shared library libssl.so.1.1`.
-const REQUIRED_ENGINE = "libquery_engine-linux-musl-openssl-3.0.x.so.node";
+// The engine actually needed by the real VPS: node:20-slim (Debian,
+// glibc) on x86_64. See packages/database/prisma/schema.prisma's
+// `binaryTargets` comment and apps/{api,tracker}/Dockerfile's
+// PRISMA_QUERY_ENGINE_LIBRARY and "why node:20-slim" comments for the
+// full "why" — this must never regress back to a musl engine, and
+// especially never to the legacy bare "linux-musl" (OpenSSL 1.1)
+// engine, which crashes production with `Error loading shared library
+// libssl.so.1.1`.
+const REQUIRED_ENGINE = "libquery_engine-debian-openssl-3.0.x.so.node";
+
+// Any engine filename that would load OpenSSL 1.1 instead of OpenSSL 3.
+// Prisma only ever produces one such engine: the bare, suffix-less
+// "linux-musl" target (as opposed to "linux-musl-openssl-3.0.x" or
+// "debian-openssl-3.0.x"). This must NEVER be present in a deployed
+// production artifact, regardless of which engine PRISMA_QUERY_ENGINE_LIBRARY
+// pins — a stray copy would mean `binaryTargets` regressed to include it.
+const FORBIDDEN_OPENSSL_1_1_ENGINE = "libquery_engine-linux-musl.so.node";
 
 const APPS = [
   { name: "@adstrackio/api", dockerfile: "apps/api/Dockerfile" },
@@ -62,17 +76,42 @@ for (const app of APPS) {
       env: { ...process.env, CI: "true" },
     });
 
-    const enginePath = join(
-      deployDir,
-      "node_modules/@adstrackio/database/generated/client",
-      REQUIRED_ENGINE,
-    );
+    const clientDir = join(deployDir, "node_modules/@adstrackio/database/generated/client");
+    const enginePath = join(clientDir, REQUIRED_ENGINE);
     if (existsSync(enginePath)) {
       pass(`deployed Prisma client contains ${REQUIRED_ENGINE}`);
     } else {
       fail(
         `deployed Prisma client is missing ${REQUIRED_ENGINE} — production would crash on ` +
-          `node:20-alpine with a musl/OpenSSL query engine error`,
+          `node:20-slim with a Prisma query engine error`,
+      );
+    }
+
+    const forbiddenEnginePath = join(clientDir, FORBIDDEN_OPENSSL_1_1_ENGINE);
+    if (existsSync(forbiddenEnginePath)) {
+      fail(
+        `deployed Prisma client contains ${FORBIDDEN_OPENSSL_1_1_ENGINE} — this engine links ` +
+          `against OpenSSL 1.1 (not present on production), which crashes with ` +
+          `PrismaClientInitializationError: Error loading shared library libssl.so.1.1`,
+      );
+    } else {
+      pass(`deployed Prisma client does not contain the legacy OpenSSL-1.1 engine`);
+    }
+
+    // Belt-and-suspenders: scan every generated engine file actually
+    // shipped, not just the two filenames checked above, in case a
+    // future binaryTargets change adds an engine neither constant
+    // anticipates.
+    const shippedEngines = existsSync(clientDir)
+      ? readdirSync(clientDir).filter((f) => f.startsWith("libquery_engine-"))
+      : [];
+    const openssl11Engines = shippedEngines.filter(
+      (f) => !f.includes("openssl") && f !== REQUIRED_ENGINE.replace(/^libquery_engine-/, ""),
+    );
+    if (openssl11Engines.length > 0) {
+      fail(
+        `deployed Prisma client contains OpenSSL-1.1-suffixed engine file(s): ` +
+          `${openssl11Engines.join(", ")}`,
       );
     }
 

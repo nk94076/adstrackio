@@ -318,7 +318,7 @@ pnpm --filter @adstrackio/database exec prisma migrate status
 
 - `docker compose build`/`docker build` for these images may not
   succeed in every environment — building requires pulling
-  `node:20-alpine`, `postgres:16-alpine`, and `redis:7-alpine` from
+  `node:20-slim`, `postgres:16-alpine`, and `redis:7-alpine` from
   Docker Hub, which some sandboxed/firewalled environments (including,
   at times, this repository's own CI/development sandbox) block at the
   network-policy level. That is an environment limitation, not a defect
