@@ -1,284 +1,335 @@
-# Production Deployment
+# Production Deployment (Docker Compose, single VPS)
 
-Phase 13 (Production Launch & Certification Evidence). This document is
-the operator-facing companion to
-`docs/compliance/production-readiness.md` (what was audited/added in the
-code) and `docs/compliance/google-certification-evidence.md` (what to
-hand Google). It covers what an operator actually has to do to stand
-this codebase up in production: build and run the three services, point
-a real tracking domain at the tracker, run migrations, and roll back if
-something goes wrong.
+How to run AdstrackIO in production on a single Ubuntu VPS using Docker
+Compose, behind an **existing** Apache reverse proxy (e.g. a Hostinger
+VPS with Apache already configured and doing TLS termination). This
+document does not configure or modify that Apache setup — it documents
+exactly what Apache needs to reverse-proxy to, and nothing about how to
+set Apache up.
 
-Nothing in this document claims the platform is already deployed,
-already certified by Google, or that any of the steps below have been
-performed against a real production environment as part of this phase
-— see "What this phase did and did not do" at the bottom.
+This does not claim Google certification/approval of anything — see
+`docs/compliance/google-transparent-click-tracker.md` for the tracker's
+transparency architecture and certification-readiness status, unrelated
+to and unaffected by this document.
 
-## 1. The three services
+## 1. Architecture
 
-| Service | Package | Default port | Purpose |
-| --- | --- | --- | --- |
-| API | `@adstrackio/api` | 4000 | Authenticated control plane + versioned public API (`/api/v1`) |
-| Tracker | `@adstrackio/tracker` | 4100 | The Google-facing transparent click tracker (`GET /:slug?redirection_url=...`) |
-| Dashboard | `@adstrackio/dashboard` | 3000 | Internal admin UI (Next.js), calls the API from the browser |
-
-All three are stateless Node processes in front of one PostgreSQL
-database. None of them hold in-process session state beyond what a
-single request needs — any of them can be scaled horizontally behind a
-load balancer with no sticky-session requirement (the session is a
-signed JWT cookie, not a server-side session store — see
-`docs/architecture/security.md#session-model`).
-
-## 2. Building production images
-
-Each app has a `Dockerfile` at its package root, built from the
-**monorepo root** as the build context (they depend on workspace
-packages under `packages/*`):
-
-```sh
-docker build -f apps/api/Dockerfile       -t adstrackio-api       .
-docker build -f apps/tracker/Dockerfile   -t adstrackio-tracker   .
-docker build -f apps/dashboard/Dockerfile -t adstrackio-dashboard \
-  --build-arg NEXT_PUBLIC_API_URL=https://api.yourdomain.com .
+```
+Internet
+   │  HTTPS (Apache terminates TLS; not covered here)
+   ▼
+Apache (existing, on the same VPS, not modified by this document)
+   │  reverse-proxies each public hostname to a LOOPBACK port
+   ├── app.yourdomain.com    → http://127.0.0.1:3000  (dashboard)
+   ├── api.yourdomain.com    → http://127.0.0.1:4000  (api)
+   └── track.yourdomain.com  → http://127.0.0.1:4100  (tracker)
+   │
+   ▼
+Docker Compose (docker/docker-compose.production.yml)
+   ┌─────────────────────────────────────────────────────────┐
+   │  adstrackio_internal (private bridge network)            │
+   │                                                            │
+   │   dashboard:3000  api:4000  tracker:4100                 │
+   │        │              │           │                      │
+   │        └──────────────┴───────────┴──── postgres:5432    │
+   │                                          redis:6379       │
+   │                                                            │
+   │  postgres/redis: NO ports published to the host at all.  │
+   │  api/tracker/dashboard: published ONLY to 127.0.0.1,     │
+   │  never 0.0.0.0 — nothing but Apache (and anyone with a   │
+   │  shell on the VPS) can reach them.                       │
+   └─────────────────────────────────────────────────────────┘
 ```
 
-`apps/api/Dockerfile` and `apps/tracker/Dockerfile` install the full
-workspace, generate the Prisma client, build with Turborepo, then run
-`pnpm prune --prod` to drop devDependencies before the runtime stage
-copies the result. `apps/dashboard/Dockerfile` uses Next.js's
-`output: "standalone"` (`apps/dashboard/next.config.mjs`) to produce a
-minimal, self-contained server bundle.
+No Nginx, no Caddy, no other reverse proxy is introduced by this
+document or these files — Apache is the only public-facing HTTP server
+on the VPS, exactly as it already is today.
 
-**`NEXT_PUBLIC_API_URL` is a build-time value**, not a runtime one — it
-is a `NEXT_PUBLIC_*` variable, which Next.js inlines into the client
-JavaScript bundle at `next build` time. Pass it as a `--build-arg`, not
-as a `docker run -e` flag; setting it only at `docker run` time has no
-effect on an already-built image.
+## 2. Files this phase added
 
-Each Dockerfile runs the application as a non-root user (`adstrackio`)
-and expects its `EXPOSE`d port (4000 / 4100 / 3000 respectively) to be
-the only one published.
-
-There is no `docker-compose.prod.yml` in this repository —
-`docker/docker-compose.yml` is development-only (a local Postgres +
-Redis for `pnpm dev`). Production orchestration (Kubernetes, ECS, Nomad,
-a managed PaaS, or a hand-rolled compose file with real secrets wired
-through your platform's secret manager) is an operator decision outside
-this codebase's scope; the Dockerfiles above are the reusable unit.
-
-## 3. Production environment variables
-
-Backend services (`apps/api`, `apps/tracker`) read and validate their
-environment eagerly at startup via `packages/config/src/schema.ts` — a
-misconfigured value fails the process immediately rather than
-surfacing as a confusing runtime error later. See `.env.example` for
-the full annotated list; the ones that matter specifically for a
-production launch:
-
-| Variable | Production requirement |
+| File | Purpose |
 | --- | --- |
-| `NODE_ENV` | Must be `production`. Governs `secure` on the session cookie (`apps/api/src/modules/auth/auth.routes.ts`) and log verbosity. |
-| `DATABASE_URL` | A real PostgreSQL connection string. Use a connection pooler (PgBouncer, RDS Proxy, etc.) in front of Postgres if running more than a couple of instances of `api`/`tracker` — Prisma opens its own connection pool per process. |
-| `REDIS_URL` | Still required by the schema (fails startup if unset) but **nothing in this codebase connects to it yet** — see the `.env.example` comment on this variable. Set it to a real Redis instance if you want it available for a future phase; it is not read anywhere today. |
-| `AUTH_SECRET` | A long, random value (`openssl rand -base64 48`), at least 32 characters, not the `.env.example` placeholder — enforced by a zod refinement, not just documentation. Rotating it invalidates every session at once (see `docs/architecture/security.md`'s session model). |
-| `APP_URL` / `API_URL` / `TRACKER_URL` | The real public HTTPS URLs of each service. `APP_URL` is also the API's CORS allow-list origin (`apps/api/src/plugins/security.ts`) — get this wrong and the dashboard cannot call the API at all. |
-| `NEXT_PUBLIC_API_URL` | Build-time only — see §2 above. |
-| `API_PORT` / `TRACKER_PORT` | Whatever your container platform expects each process to listen on internally (the Dockerfiles default to 4000/4100). |
-| `CLICK_IP_HASH_SALT` | Optional; set a dedicated value in production to decouple IP-hash derivation from `AUTH_SECRET` (see `.env.example`). |
-| `TRUSTED_EDGE_SECRET` | Optional, **and this decision matters for transparency**: leave it unset unless your CDN/edge is configured to inject a matching `x-adstrackio-edge-secret` header on every request it forwards, and to strip any client-supplied copy first. Setting it without that edge configuration does nothing (COUNTRY routing conditions simply never match); setting it *without* stripping the client header would let a client's own header be trusted — see `docs/architecture/rules-routing.md#country-signal-trust-boundary`. |
+| `apps/api/Dockerfile` | Multi-stage production image (`build` → `migrate` / `pruned` → `runtime`). |
+| `apps/tracker/Dockerfile` | Multi-stage production image (`build` → `runtime`). |
+| `apps/dashboard/Dockerfile` | Multi-stage production image using Next.js `output: "standalone"`. |
+| `.dockerignore` | Keeps `node_modules`, `.git`, build artifacts, etc. out of the build context. |
+| `docker/docker-compose.production.yml` | The 5 services (postgres, redis, api, tracker, dashboard) + the one-shot `migrate` job. |
+| `.env.production.example` | Template for the real `.env.production` file you create on the VPS (never committed). |
+| `apps/dashboard/next.config.mjs` | Added `output: "standalone"` + `outputFileTracingRoot` (Next.js/pnpm-workspace requirement for a lean Docker image). |
+| `apps/api/src/app.ts`, `apps/tracker/src/app.ts` | Added `GET /ready` (database-connectivity healthcheck, separate from the pre-existing `/health` liveness check). |
 
-**Same-site deployment requirement.** `apps/api` and `apps/dashboard`
-must be deployed on the same registrable "site" — e.g.
-`api.yourdomain.com` and `app.yourdomain.com`, both under
-`yourdomain.com` — not on unrelated domains. The session cookie is
-`SameSite=Lax` and scoped to the API's own origin; the dashboard calls
-the API directly from the browser with `credentials: "include"`, which
-only works for a same-site (even if cross-origin/cross-port) request.
-Deploying them on unrelated domains breaks authentication entirely, not
-partially. See `docs/architecture/security.md#session-model`.
+`docker/docker-compose.yml` (dev-only Postgres+Redis for `pnpm dev`) is
+unchanged and unrelated — do not run both compose files against the
+same host at once (port/volume-name collisions).
 
-Never commit a filled-in `.env` (or equivalent secret file) — `.gitignore`
-already excludes `.env*` except `.env.example`.
+## 3. One-time VPS setup
 
-## 4. Real tracking-domain setup
+1. Install Docker Engine and the Docker Compose plugin on the VPS
+   (`docker compose version` should report a v2 client). This document
+   assumes both are already installed, per the brief's premise.
+2. Clone this repository onto the VPS, e.g. `/opt/adstrackio`.
+3. Copy the environment template and fill in real values:
+   ```sh
+   cp .env.production.example .env.production
+   chmod 600 .env.production
+   ```
+   Generate `AUTH_SECRET`, `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, and
+   (optionally) `CLICK_IP_HASH_SALT` with `openssl rand -base64 48` (or
+   similar) — every variable is documented inline in
+   `.env.production.example`. Set `APP_URL`/`API_URL`/`TRACKER_URL`/
+   `NEXT_PUBLIC_API_URL` to the real HTTPS hostnames Apache will front.
+   **Never commit `.env.production`** — `.gitignore` excludes it
+   (fixed this phase: the pre-existing pattern only excluded `.env`,
+   `.env.local`, and `.env.*.local`, which does not match
+   `.env.production` — a real gap, now closed).
+4. Configure Apache's virtual hosts for `app.`/`api.`/`track.`
+   yourdomain.com to reverse-proxy to `127.0.0.1:3000` / `127.0.0.1:4000`
+   / `127.0.0.1:4100` respectively, with TLS termination on Apache's
+   side (this document does not provide Apache config — that's the
+   "existing Hostinger Apache configuration" this phase is explicitly
+   not to touch). Forward the `Host` header unchanged for the tracker
+   vhost specifically — the resolver matches on it
+   (`apps/tracker/src/modules/tracker/tracker.routes.ts`'s
+   `normalizeRequestHostname`). Do not let Apache cache, rewrite, or
+   otherwise interfere with the tracker's `Location` response header —
+   see §8.
 
-This is what makes a tracking link Google-facing and is the part a
-certification submission actually inspects.
+## 4. Build
 
-1. **Choose a real subdomain you control** for tracking links, e.g.
-   `track.yourdomain.com`. It does not need to be a subdomain of the
-   dashboard/API's own domain (unlike §3's same-site cookie
-   requirement, which is about the API and dashboard, not the tracker
-   — the tracker has no session/cookie concept at all, see
-   `apps/tracker/src/plugins/security.ts`).
-2. **Create the domain** via the authenticated API/dashboard
-   (`POST /api/v1/organizations/:organizationId/domains`, or the
-   Domains page). This returns a DNS TXT verification token
-   (`TrackingDomain.verificationToken`) — see
-   `docs/architecture/domain-manager.md` for the full flow.
-3. **Publish the DNS TXT record** the response names, at the hostname
-   it specifies. Verification polls for this record; it is not
-   instantaneous DNS propagation, so allow for normal DNS TTL delay.
-4. **Trigger verification** (`POST .../domains/:id/verify`). The domain
-   only becomes usable once `verificationStatus` is `VERIFIED` — the
-   tracker's resolver hard-requires this (`apps/tracker/src/modules/tracker/prisma-tracking-resolver.ts`)
-   and a Postgres `CHECK` constraint additionally enforces that
-   `isActive` can never be `true` while `verificationStatus` is not
-   `VERIFIED`, so this cannot be bypassed by a raw SQL update either
-   (`apps/api/test/domains-lifecycle.test.ts` proves the DB-level
-   invariant, not just the service layer).
-5. **Point DNS for that hostname at your tracker deployment** — an A/
-   AAAA/CNAME record to wherever `apps/tracker`'s containers/load
-   balancer live. This is separate from the TXT verification record in
-   step 3 (which only needs to exist long enough to verify ownership;
-   it does not need to keep pointing traffic anywhere).
-6. **Terminate TLS in front of the tracker.** `TrackingDomain.sslStatus`
-   deliberately stays `NOT_CONFIGURED` in this codebase — it does not
-   provision a certificate for you (see
-   `docs/compliance/google-transparent-click-tracker.md#12-known-limitations`).
-   Use your platform's standard TLS termination: a managed load
-   balancer/CDN with automatic certificate provisioning (e.g. ACM,
-   Cloudflare, a Kubernetes ingress with cert-manager), or your own
-   reverse proxy (nginx/Caddy/Envoy) with Let's Encrypt. Google Ads
-   requires the tracking URL to be HTTPS; a self-signed or missing
-   certificate is not acceptable for certification.
-7. **Reverse proxy / load balancer requirements**, if you put one in
-   front of the tracker (recommended for TLS termination and horizontal
-   scaling):
-   - Forward the `Host` header unchanged — the resolver matches on it
-     (`normalizeRequestHostname` in `apps/tracker/src/modules/tracker/tracker.routes.ts`
-     strips only the port and lowercases; it does not rewrite the
-     hostname).
-   - Do **not** rewrite, cache, or short-circuit the `Location` header
-     the tracker returns. A CDN configured to "follow and cache
-     redirects" would defeat the entire transparency mechanism this
-     phase and Phase 12 exist to prove — the visible destination must
-     reach the browser exactly as the tracker returned it.
-   - Do not introduce your own redirect/rewrite rule in front of the
-     tracker for tracking-link paths. Any additional hop between the ad
-     click and the tracker's own redirect reintroduces exactly the
-     "hidden intermediate redirect" pattern Phase 12's transparency
-     audit confirmed does not exist in the application itself — adding
-     one at the infrastructure layer would silently reintroduce it.
-   - `trustProxy: true` is already set on both Fastify apps
-     (`apps/api/src/app.ts`, `apps/tracker/src/app.ts`), so a standard
-     `X-Forwarded-For`/`X-Forwarded-Proto`-setting proxy in front of
-     them works without additional application changes.
+```sh
+cd /opt/adstrackio
+docker compose --env-file .env.production -f docker/docker-compose.production.yml build
+```
 
-## 5. Database migrations in production
+Builds `api`, `tracker`, and `dashboard`'s `runtime` targets (the
+`migrate` target, sharing the `api` Dockerfile's `build` stage, is built
+on demand by the command in §5, not by a plain `build`). This can take
+several minutes the first time (installs the whole pnpm workspace).
 
-- Migrations are Prisma migrations under `packages/database/prisma/migrations/`,
-  applied with `pnpm db:migrate:deploy` (wraps `prisma migrate deploy`) —
-  the non-interactive command intended for CI/CD and production, as
-  opposed to `pnpm db:migrate` (`prisma migrate dev`), which is
-  development-only and can prompt/reset.
-- Run `pnpm db:migrate:deploy` as a **release step before** the new
-  application code starts serving traffic (a deploy pipeline's
-  pre-deploy hook, an init container, or a manual step immediately
-  before rolling the deployment) — never let application instances
-  race a schema migration.
-- Check status non-destructively at any time with
-  `pnpm --filter @adstrackio/database exec prisma migrate status`. This
-  phase introduced no schema changes — see
-  `docs/compliance/production-readiness.md` for the exact output this
-  phase recorded.
-- **This phase introduces no destructive migration** and did not modify
-  `packages/database/prisma/schema.prisma`. Every phase since Phase 1
-  has added columns/tables/indexes additively; no migration in this
-  repository drops a column or table.
-- **Indexes.** The tracker's hot-path lookup (`TrackingDomain.hostname`,
-  `@@unique([trackingDomainId, slug])` on `TrackingLink`) and every
-  reporting/analytics aggregation query
-  (`Click`/`Conversion`'s `organizationId`+`occurredAt`,
-  `campaignId`+`occurredAt`, `trackingLinkId`+`occurredAt` composite
-  indexes, etc.) already have the indexes their query patterns need —
-  added incrementally in Phases 3/4/7/9/10 as each query pattern was
-  introduced. This phase re-verified them (see
-  `docs/compliance/production-readiness.md#6-databasebackup-readiness`)
-  and added none, per the brief's "do not introduce unnecessary schema
-  changes."
+## 5. Migrate
 
-### Rollback procedure
+**Always run this before starting `api`/`tracker` for the first time,
+and again after every update that includes a new migration** — see §9
+for the update procedure this fits into.
 
-1. **Roll back application code first**, not the database. Every
-   migration in this repository is additive (new nullable/defaulted
-   columns, new tables, new indexes) — old application code continues
-   to run correctly against a newer schema, so redeploying the previous
-   container image resolves almost any incident without touching the
-   database at all.
-2. If a specific migration must actually be reverted (schema-level, not
-   just the app), write and apply a new forward migration that undoes
-   it — `prisma migrate deploy` has no built-in "undo" for an already-
-   applied migration, and hand-editing applied migration history in
-   production is a fast path to a divergent `_prisma_migrations` table.
-   Treat "roll back the schema" as "author a new migration," the same
-   review process as any other schema change.
-3. If rollback requires restoring data (not just schema), restore from
-   the backup taken before the migration ran (§6) rather than trying to
-   algorithmically reverse application writes.
+```sh
+docker compose --env-file .env.production -f docker/docker-compose.production.yml \
+  --profile tools run --rm migrate
+```
 
-## 6. Backup and restore expectations
+This runs `prisma migrate deploy` (never `prisma migrate dev` — that
+command is interactive/development-only and this repository's
+Dockerfiles do not even ship the `prisma` CLI outside the dedicated
+`migrate` build target, specifically so it can't be reached for by
+accident in the `api`/`tracker` runtime images). `migrate` uses the
+`--profile tools` flag specifically so it is never started by a plain
+`docker compose up` — it is a one-shot job you run explicitly.
 
-This codebase does not implement its own backup mechanism — Postgres
-backup/restore is standard infrastructure, not application code, and is
-an operator/platform responsibility (managed Postgres providers —
-RDS, Cloud SQL, Neon, etc. — typically provide automated snapshots and
-point-in-time recovery out of the box). What to actually back up and
-when, specific to this schema:
+Check status non-destructively at any time, without applying anything:
 
-- **Take a snapshot immediately before running `db:migrate:deploy`** in
-  production, every time — the standard "backup before migration" rule,
-  not specific to any migration in this repository being risky.
-- **`Click` and `Conversion` are the highest-volume, highest-value
-  tables** (attribution data — see `docs/architecture/data-model.md`).
-  If your backup provider supports differentiated retention, prioritize
-  point-in-time recovery granularity for these over lower-volume
-  configuration tables (`Organization`, `Campaign`, `TrackingDomain`,
-  etc.), which change far less often and matter less to lose a few
-  minutes of.
-- **`ApiKey.hashedSecret` and `WebhookEndpoint`'s encrypted signing
-  secret are one-way/encrypted at rest** (Phase 11 — see
-  `docs/architecture/security.md`) — a database restore recovers them
-  correctly with no separate secret-recovery step, but a restore to an
-  earlier point in time will resurrect any API key or webhook secret
-  that was revoked/rotated after that snapshot. Treat a restore as
-  equivalent to un-revoking anything revoked since, and re-revoke as
-  part of the restore runbook if that matters for the incident.
-- **Restore into a separate instance first** and run
-  `pnpm --filter @adstrackio/database exec prisma migrate status`
-  against it before cutting production traffic over, to confirm the
-  restored schema version matches what the currently-deployed
-  application code expects.
+```sh
+docker compose --env-file .env.production -f docker/docker-compose.production.yml \
+  --profile tools run --rm migrate sh -c \
+  "cd /repo/packages/database && pnpm exec prisma migrate status"
+```
 
-## 7. Deploying the dashboard
+## 6. Start
 
-The dashboard has no backend of its own — it is a Next.js app whose
-authenticated pages are client components calling the API directly from
-the browser (`apps/dashboard/src/lib/api-client.ts`, `credentials:
-"include"`). Deploy it anywhere that can run `node apps/dashboard/server.js`
-(the standalone output's entrypoint) or serve a Next.js app generally —
-its own platform (Vercel, etc.), or the same container platform as the
-other two services. It is not part of the Google-facing tracker surface
-and has no bearing on certification.
+```sh
+docker compose --env-file .env.production -f docker/docker-compose.production.yml up -d
+```
 
-## 8. Observability
+Starts `postgres`, `redis`, `api`, `tracker`, `dashboard` (in that
+dependency order — `api`/`tracker` wait for `postgres`'s healthcheck to
+pass before starting). `migrate` is excluded (its `profiles: ["tools"]`
+setting) and never starts as part of this command.
 
-See `docs/compliance/production-readiness.md#7-observability` for what
-`/health` and `/ready` return on both backend services, what gets
-logged (and what deliberately never does), and the known gap (no metrics/
-tracing wired up yet — structured logs only).
+## 7. Logs
 
-## What this phase did and did not do
+```sh
+docker compose --env-file .env.production -f docker/docker-compose.production.yml logs -f
+docker compose --env-file .env.production -f docker/docker-compose.production.yml logs -f tracker   # one service
+```
 
-This phase authored the Dockerfiles above, added `/ready` endpoints, and
-wrote this deployment procedure — it did **not** provision a real
-tracking domain, run these Dockerfiles against a live cloud environment,
-or perform an actual production deployment. `docker build` for these
-images could not be executed in this development session because the
-session's network policy does not permit reaching Docker Hub's image
-CDN (a sandboxed egress restriction, not a defect in the Dockerfiles
-themselves) — see
-`docs/compliance/production-readiness.md#1-production-environment-audit`
-for exactly what was and was not possible to verify directly, and build
-these images yourself in an environment with normal registry access
-before relying on them.
+Every application log line is structured JSON (Pino) with secrets/
+tokens/session cookies/raw IPs redacted before they're ever written —
+see `packages/logger`'s `REDACT_PATHS` and
+`docs/architecture/security.md`'s security posture summary.
+`postgres`/`redis` log their own startup and query/connection activity
+as those images normally do; neither is configured by this repository
+to log query contents that would include application secrets (the
+application never sends secrets as SQL literals — Prisma parameterizes
+every query it issues from application code).
+
+## 8. Health checks
+
+Every application service has a container-level `HEALTHCHECK`
+(`docker ps` shows `healthy`/`unhealthy`/`starting`) hitting its own
+`GET /ready` (api/tracker) or `GET /` (dashboard) over loopback from
+inside the container — see each `Dockerfile`. `postgres`/`redis` use
+their standard `pg_isready`/`redis-cli ping` checks.
+
+```sh
+docker compose --env-file .env.production -f docker/docker-compose.production.yml ps
+```
+
+To check from the VPS host itself (what Apache would see):
+
+```sh
+curl -s http://127.0.0.1:4000/ready    # api
+curl -s http://127.0.0.1:4100/ready    # tracker
+curl -s http://127.0.0.1:3000/         # dashboard
+```
+
+`/health` (liveness — process is running) is distinct from `/ready`
+(readiness — the database is actually reachable); see
+`apps/api/src/app.ts`/`apps/tracker/src/app.ts`.
+
+**Verifying the tracker's transparent-redirect behavior specifically**
+(the part that must never change): once a real tracking domain and link
+exist, use `pnpm compliance:test -- --remote` with `TRACKER_URL`,
+`COMPLIANCE_TEST_HOSTNAME`, and `COMPLIANCE_TEST_SLUG` set (see
+`apps/tracker/scripts/compliance-test.ts`'s own header comment and
+`docs/compliance/google-certification-checklist.md` for the exact
+variables and expected `Location`-header results) — this document only
+covers standing the containers up, not the tracker's redirect
+semantics, which this phase does not touch.
+
+## 9. Safe update / rollback procedure
+
+1. `git pull` (or check out the new commit/tag) on the VPS.
+2. Rebuild:
+   ```sh
+   docker compose --env-file .env.production -f docker/docker-compose.production.yml build
+   ```
+3. Run migrations (§5) — every migration in this repository to date is
+   additive (new nullable/defaulted columns, new tables, new indexes;
+   never a drop), so this is always safe to run before swapping the
+   application containers, and old containers keep working correctly
+   against a newer schema if a rollback is needed mid-update.
+4. Recreate the application containers with the new images:
+   ```sh
+   docker compose --env-file .env.production -f docker/docker-compose.production.yml up -d
+   ```
+   Compose only recreates containers whose image/config actually
+   changed — `postgres`/`redis` are left untouched if their service
+   definitions didn't change.
+5. Check health (§8) before considering the update complete.
+
+**Rollback**: because every migration is additive, rolling back is
+almost always just re-deploying the previous image tag/commit and
+running step 4 again — the old code works fine against the (newer,
+strictly additive) schema. Only if a specific migration must be
+schema-level reverted, write and apply a new forward migration that
+undoes it (`prisma migrate deploy` has no built-in "undo" for an
+already-applied migration); this is the same review process as any
+other schema change, not a special rollback command. If data must be
+restored (not just schema), restore the `adstrackio_postgres_data`
+volume (or your own external Postgres backup, if you've configured one
+— this repository does not implement backup/restore itself) from
+before the migration ran.
+
+## 10. Security decisions specific to this deployment
+
+- **postgres/redis are never published to the host.** No `ports:` entry
+  for either service in `docker-compose.production.yml` — the only way
+  to reach them is from another container on the `adstrackio_internal`
+  network. This is the actual isolation mechanism, not marking the
+  network `internal: true` (which would also cut off `api`/`tracker`'s
+  legitimate outbound internet access, e.g. webhook delivery to
+  external endpoints).
+- **api/tracker/dashboard are published to `127.0.0.1` only, never
+  `0.0.0.0`.** Apache (running directly on the VPS, not in a container)
+  reaches them over loopback; nothing external can reach these ports
+  directly even if the VPS's firewall were misconfigured to allow
+  inbound traffic to them, because Docker never binds them to a
+  non-loopback interface in the first place.
+- **Every application container runs as a non-root user** (`adstrackio`,
+  created in each Dockerfile's runtime stage) — a container escape or a
+  dependency RCE inside one of these processes does not hand over root
+  inside the container, let alone the host.
+- **`security_opt: no-new-privileges:true`** on every application/
+  database/cache service — blocks a process inside the container from
+  gaining privileges beyond its starting set (e.g. via a setuid binary),
+  standard defense-in-depth for a service that shouldn't need it.
+- **`prisma` (the CLI) is not present in the `api`/`tracker` runtime
+  images** — only the dedicated `migrate` build target has it (built
+  from the pre-`pnpm prune --prod` `build` stage). The application
+  processes never need it at runtime, so it's not there to be a
+  misconfigured entry point or an accidentally-exposed migration
+  command.
+- **Credentials only ever come from environment variables**
+  (`.env.production`, never committed, `chmod 600`'d) — nothing in any
+  Dockerfile or compose file hardcodes a password, secret, or
+  connection string. `POSTGRES_PASSWORD`/`REDIS_PASSWORD` use Compose's
+  `${VAR:?message}` syntax, so `docker compose` itself refuses to start
+  anything if they're unset, rather than silently starting an
+  unauthenticated database.
+- **Secrets are never printed in application logs** — Pino's redaction
+  config (`packages/logger`) strips `AUTH_SECRET`/API keys/webhook
+  secrets/session cookies from every log line before it's written, not
+  just in this deployment but everywhere the logger is used (including
+  local development).
+- **NEXT_PUBLIC_API_URL is a build-time value.** It's a `NEXT_PUBLIC_*`
+  variable, which Next.js inlines into the browser-shipped JavaScript
+  bundle at `next build` — passing it only as a container runtime env
+  var (`docker run -e`) has no effect on an already-built image. The
+  dashboard Dockerfile takes it as a build ARG specifically so this
+  can't be gotten wrong silently.
+
+## 11. What this phase did not change
+
+- **The transparent redirect is unchanged, byte-for-byte, in behavior.**
+  `GET /:slug?redirection_url=<visible-destination>` still redirects to
+  exactly that validated destination; no hidden stored `Destination` can
+  override it; `BOT` traffic still routes to the campaign's Safe Page
+  and nothing else does. This phase touched zero lines in
+  `apps/tracker/src/modules/tracker/tracker.routes.ts`,
+  `packages/shared/src/transparent-redirect.ts`, or
+  `packages/shared/src/routing-rules.ts`. See
+  `docs/compliance/redirect-audit.md` (Phase 12) for the full,
+  still-accurate audit of every redirect-shaped code path in this
+  repository.
+- **No new synchronous external calls were added to the tracker's hot
+  path.** The new `GET /ready` endpoint is a separate route, never
+  called from or awaited by `GET /:slug`.
+- **No database schema changes.** `packages/database/prisma/schema.prisma`
+  is unchanged; `prisma migrate status` reports up to date (see §12).
+- **This does not claim Google certification, approval, or verification
+  of anything.** See `docs/compliance/google-transparent-click-tracker.md`
+  for the actual (not-certified) status of the transparency work; this
+  document is purely about running the existing, unmodified application
+  in containers.
+
+## 12. Commands run to verify this phase (recorded results)
+
+See this phase's pull request description for the exact recorded
+output of:
+
+```sh
+pnpm lint
+pnpm typecheck
+pnpm turbo run test --force
+pnpm build
+pnpm --filter @adstrackio/database exec prisma migrate status
+```
+
+## 13. Limitations
+
+- `docker compose build`/`docker build` for these images may not
+  succeed in every environment — building requires pulling
+  `node:20-alpine`, `postgres:16-alpine`, and `redis:7-alpine` from
+  Docker Hub, which some sandboxed/firewalled environments (including,
+  at times, this repository's own CI/development sandbox) block at the
+  network-policy level. That is an environment limitation, not a defect
+  in these Dockerfiles — see this phase's PR description for exactly
+  what was and wasn't possible to verify directly in the session that
+  authored them.
+- No backup/restore automation is included — see §9's rollback section
+  for what this repository assumes about restoring the `postgres`
+  volume; the actual backup schedule/mechanism is an operator decision.
+- No metrics/tracing pipeline — `/health`, `/ready`, and structured logs
+  are the only observability surface this repository provides.
+- This document assumes Apache is already correctly configured with
+  valid TLS certificates for all three hostnames; it does not provide
+  or validate that configuration.

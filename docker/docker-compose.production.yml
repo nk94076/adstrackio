@@ -1,0 +1,192 @@
+# Production Docker Compose file for a single Ubuntu VPS deployment,
+# sitting behind an existing Apache reverse proxy (per-vhost TLS
+# termination + proxying to the loopback ports this file publishes —
+# see docs/deployment/production.md). This file does not replace or
+# configure Apache in any way.
+#
+# Usage (from the repository root, not from inside docker/):
+#   docker compose --env-file .env.production -f docker/docker-compose.production.yml build
+#   docker compose --env-file .env.production -f docker/docker-compose.production.yml \
+#     --profile tools run --rm migrate
+#   docker compose --env-file .env.production -f docker/docker-compose.production.yml up -d
+#
+# See docs/deployment/production.md for the full command reference
+# (build/migrate/start/logs/health checks/update/rollback) and
+# .env.production.example for every variable referenced below.
+#
+# This is a SEPARATE file from docker/docker-compose.yml, which remains
+# the dev-only Postgres+Redis pair used by `pnpm dev`. Do not run both
+# against the same host at once (port/volume-name collisions).
+
+name: adstrackio-production
+
+networks:
+  # A single bridge network for every service in this file. postgres and
+  # redis are unreachable from outside Docker not because this network is
+  # marked `internal` (it isn't — api/tracker need real outbound internet
+  # access, e.g. for webhook delivery), but because neither service below
+  # publishes a `ports:` mapping to the host at all. That is the actual
+  # security boundary here, not network isolation.
+  adstrackio_internal:
+    driver: bridge
+
+volumes:
+  adstrackio_postgres_data:
+  adstrackio_redis_data:
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    volumes:
+      - adstrackio_postgres_data:/var/lib/postgresql/data
+    networks:
+      - adstrackio_internal
+    # Deliberately NO `ports:` — not published to the host at all, per
+    # the requirement that postgres is only ever reachable over the
+    # private Docker network.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 1.0
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Provisioned because packages/config/src/schema.ts requires
+    # REDIS_URL to be set (fails app startup otherwise) — see the
+    # REDIS_URL comment in .env.production.example. Not actually
+    # connected to by any application code today; running it costs
+    # little and keeps the deployment ready for a future phase that
+    # does use it, without claiming it does anything yet.
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"]
+    volumes:
+      - adstrackio_redis_data:/data
+    networks:
+      - adstrackio_internal
+    # Deliberately NO `ports:` — not published to the host at all.
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 128m
+    cpus: 0.5
+
+  # One-shot migration runner — `prisma migrate deploy` only, never
+  # `migrate dev`. Not part of the default `up` set (see `profiles:`
+  # below): run it explicitly, once, before starting/updating api or
+  # tracker. See docs/deployment/production.md for the exact command.
+  migrate:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+      target: migrate
+    env_file:
+      - ../.env.production
+    networks:
+      - adstrackio_internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: ["tools"]
+    restart: "no"
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+      target: runtime
+    restart: unless-stopped
+    env_file:
+      - ../.env.production
+    networks:
+      - adstrackio_internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Bound to loopback only — Apache reverse-proxies api.yourdomain.com
+    # to http://127.0.0.1:4000 from the same VPS. Never publishes to
+    # 0.0.0.0, so nothing reaches this port except from the host itself.
+    ports:
+      - "127.0.0.1:${API_PORT:-4000}:4000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 1.0
+
+  tracker:
+    build:
+      context: ..
+      dockerfile: apps/tracker/Dockerfile
+      target: runtime
+    restart: unless-stopped
+    env_file:
+      - ../.env.production
+    networks:
+      - adstrackio_internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Bound to 127.0.0.1:4100 specifically, per Apache's existing
+    # reverse-proxy configuration for the tracking domain on this VPS —
+    # see docs/deployment/production.md. Never publishes to 0.0.0.0.
+    ports:
+      - "127.0.0.1:${TRACKER_PORT:-4100}:4100"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    # The tracker's redirect hot path is deliberately lightweight (no
+    # synchronous external calls) — a modest limit is intentional, not a
+    # placeholder.
+    mem_limit: 256m
+    cpus: 1.0
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: apps/dashboard/Dockerfile
+      target: runtime
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?NEXT_PUBLIC_API_URL is required}
+    restart: unless-stopped
+    networks:
+      - adstrackio_internal
+    # Bound to loopback only — Apache reverse-proxies app.yourdomain.com
+    # to http://127.0.0.1:3000 from the same VPS.
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 1.0

@@ -6,14 +6,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // Phase 13 production readiness: emit a self-contained `.next/standalone`
-  // server (only the node_modules this app actually traces as used) so the
-  // production Docker image (apps/dashboard/Dockerfile) doesn't need to
-  // ship the whole pnpm workspace's node_modules. `outputFileTracingRoot`
-  // points at the monorepo root, not this app's own directory, so Next's
-  // file tracer can see and correctly prune the workspace packages this
-  // app imports from outside apps/dashboard (e.g. none today, but this is
-  // the standard, safe setting for any pnpm-workspace Next.js app).
+  // Production containerization (Phase 13): emit a self-contained
+  // `.next/standalone` server (only the node_modules this app actually
+  // traces as used) so the production Docker image
+  // (apps/dashboard/Dockerfile) doesn't need to ship the whole pnpm
+  // workspace's node_modules. `outputFileTracingRoot` points at the
+  // monorepo root, not this app's own directory, so Next's file tracer
+  // can see and correctly prune the workspace — the standard, safe
+  // setting for any pnpm-workspace Next.js app.
   output: "standalone",
   outputFileTracingRoot: path.join(__dirname, "../../"),
   // Next's dev-mode "building..." badge floats bottom-left, which

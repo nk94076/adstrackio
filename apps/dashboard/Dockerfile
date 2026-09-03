@@ -5,8 +5,9 @@
 #
 # Build from the MONOREPO ROOT, e.g.:
 #
-#   docker build -f apps/dashboard/Dockerfile -t adstrackio-dashboard .
-#   docker run -e NEXT_PUBLIC_API_URL=https://api.example.com -p 3000:3000 adstrackio-dashboard
+#   docker build -f apps/dashboard/Dockerfile --target runtime -t adstrackio-dashboard \
+#     --build-arg NEXT_PUBLIC_API_URL=https://api.yourdomain.com .
+#   docker run -p 127.0.0.1:3000:3000 adstrackio-dashboard
 #
 # Uses Next.js's `output: "standalone"` (see next.config.mjs) so the
 # runtime image only needs the traced-as-used node_modules plus the
@@ -40,4 +41,7 @@ COPY --from=build /repo/apps/dashboard/public ./apps/dashboard/public
 
 USER adstrackio
 EXPOSE 3000
+HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=5 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+
 CMD ["node", "apps/dashboard/server.js"]

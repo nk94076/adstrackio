@@ -49,11 +49,12 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
   // Liveness (/health, above) only proves the process is running.
   // Readiness additionally proves it can actually serve requests that
-  // touch the database — a load balancer/orchestrator should stop
-  // routing traffic here (without restarting the process) when this
-  // returns 503, e.g. during a database failover. Deliberately not on
-  // any hot request path: it is its own endpoint, checked out-of-band by
-  // infrastructure, never called as part of handling a real request.
+  // touch the database — a load balancer/orchestrator/container
+  // healthcheck should stop routing traffic here (without restarting
+  // the process) when this returns 503, e.g. during a database
+  // failover. Deliberately not on any hot request path: it is its own
+  // endpoint, checked out-of-band by infrastructure, never called as
+  // part of handling a real request.
   fastify.get("/ready", async (_request, reply) => {
     try {
       await fastify.prisma.$queryRaw`SELECT 1`;
