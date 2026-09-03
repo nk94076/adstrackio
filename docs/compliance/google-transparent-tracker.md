@@ -6,10 +6,16 @@
 Click Tracker certification.** No part of this codebase should be
 represented to Google, to customers, or in any documentation as certified
 or as implementing certified behavior. Phase 3 (Transparent Click Tracker)
-is implementation groundwork for a future certification effort
-(Phase 12: Google Certification Preparation & Submission) — it establishes
-the redirect architecture the certification review will examine, not a
-finished, submitted, or approved integration.
+built the redirect architecture; Phase 12 (Google Certification
+Preparation & Submission) re-read this document (see "Re-reading this
+document" below), audited every redirect path in the repository against
+it, added an explicit compliance test suite, and produced submission-
+ready documentation — see `docs/compliance/google-transparent-click-tracker.md`
+(the primary certification-readiness document),
+`docs/compliance/google-certification-checklist.md`, and
+`docs/compliance/redirect-audit.md`. This is certification-*readiness*
+work: it prepares the system for a manual submission and review process
+this codebase cannot itself complete or grant.
 
 ## The core architectural decision: a visible, request-supplied destination
 
@@ -210,9 +216,27 @@ Phase 5 (Bot Detection Integration) re-read this document before wiring
 requirement 7 and the "Bot routing" section above, both updated in that
 phase) and confirmed no core transparency requirement changed — only the
 previously-undefined routing behavior for two classifications was made
-explicit and campaign-configurable. Whoever implements Phase 8 (Rules &
-Routing Engine) or Phase 12 (Google Certification Preparation) should
-re-read this document before changing tracker behavior, and update it —
-not just the code — if any of these constraints turn out to be wrong,
-incomplete, or in tension with an actual Google requirement discovered
-during certification prep.
+explicit and campaign-configurable.
+
+Phase 8 (Rules & Routing Engine) added campaign-scoped routing rules that
+select among the same `TARGET`/`SAFE_PAGE`/`BLOCK` outcomes this document
+already defines — `TARGET` still means "follow the request's own
+`redirection_url`," never a rule-configured URL; no rule can name an
+arbitrary destination. Phase 9 (Affiliate/Partner System) added
+click-level affiliate attribution that is recorded internally
+(`Click.affiliatePartnerId`) and never read by the redirect decision
+itself. Phase 11 (API + Integrations) added a public API, webhooks, and
+an outbox/delivery worker entirely within `apps/api`; zero lines of that
+work touch `apps/tracker`.
+
+Phase 12 (Google Certification Preparation & Submission) re-read this
+document in full, re-verified every requirement below against the actual
+code (not just prior documentation) across Phases 3, 5, 8, 9, and 11, and
+confirmed no requirement here has been violated or silently changed. See
+`docs/compliance/redirect-audit.md` for the line-by-line audit and
+`docs/compliance/google-transparent-click-tracker.md` for the
+certification-submission-oriented writeup this phase produced. Any future
+phase that changes tracker behavior must re-read this document first and
+update it — not just the code — if a constraint here turns out to be
+wrong, incomplete, or in tension with an actual Google requirement
+discovered during certification review.
