@@ -35,6 +35,15 @@ ENV CI=true
 COPY . .
 RUN pnpm install --frozen-lockfile
 RUN pnpm exec turbo run build --filter=@adstrackio/dashboard
+# apps/dashboard has no public/ directory in this repo (no static assets
+# checked in) — `next build` never creates one either, it only ever
+# copies an existing public/ into .next/standalone's traced output.
+# `COPY --from=` (unlike shell `cp`) hard-fails if its source path
+# doesn't exist, so guarantee the path is present here (a no-op if a
+# real public/ directory is ever added later, since `-p` doesn't
+# clobber existing content) rather than committing an empty directory
+# to the repo just to appease Docker.
+RUN mkdir -p /repo/apps/dashboard/public
 
 FROM node:20-alpine AS runtime
 ENV NODE_ENV=production
