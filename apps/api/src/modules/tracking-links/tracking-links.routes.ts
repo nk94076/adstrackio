@@ -1,5 +1,11 @@
 import type { FastifyInstance } from "fastify";
-import { createTrackingLinkForCampaignSchema, createTrackingLinkSchema, updateTrackingLinkSchema } from "@adstrackio/validation";
+import {
+  createTrackingLinkForCampaignSchema,
+  createTrackingLinkSchema,
+  listTrackingLinksQuerySchema,
+  updateTrackingLinkSchema,
+} from "@adstrackio/validation";
+import { actorIdOf } from "../../plugins/api-key-auth.js";
 import {
   activateTrackingLink,
   archiveTrackingLink,
@@ -12,6 +18,9 @@ import {
   updateTrackingLink,
 } from "./tracking-links.service.js";
 
+/** Dashboard sessions AND public-API keys (Phase 11) — see
+ * campaigns.routes.ts's doc comment for the dual-auth convention this
+ * mirrors exactly. */
 export async function registerTrackingLinkRoutes(fastify: FastifyInstance) {
   // --- Flat, organization-scoped routes (Phase 1) -------------------------
   // Kept for the existing "all tracking links across the organization"
@@ -19,26 +28,22 @@ export async function registerTrackingLinkRoutes(fastify: FastifyInstance) {
   // surface Phase 6 adds. Both resolve to the same underlying rows.
   fastify.get(
     "/organizations/:organizationId/tracking-links",
-    { preHandler: [fastify.authenticate, fastify.requireOrganizationMember("VIEWER")] },
+    { preHandler: [fastify.authenticateEither, fastify.requireOrgAccess("VIEWER", ["READ"])] },
     async (request) => {
       const { organizationId } = request.params as { organizationId: string };
-      const trackingLinks = await listTrackingLinks(fastify.prisma, organizationId);
+      const query = listTrackingLinksQuerySchema.parse(request.query);
+      const trackingLinks = await listTrackingLinks(fastify.prisma, organizationId, query);
       return { trackingLinks };
     },
   );
 
   fastify.post(
     "/organizations/:organizationId/tracking-links",
-    { preHandler: [fastify.authenticate, fastify.requireOrganizationMember("MEMBER")] },
+    { preHandler: [fastify.authenticateEither, fastify.requireOrgAccess("MEMBER", ["WRITE"])] },
     async (request, reply) => {
       const { organizationId } = request.params as { organizationId: string };
       const input = createTrackingLinkSchema.parse(request.body);
-      const trackingLink = await createTrackingLink(
-        fastify.prisma,
-        request.user!.id,
-        organizationId,
-        input,
-      );
+      const trackingLink = await createTrackingLink(fastify.prisma, actorIdOf(request), organizationId, input);
       reply.status(201);
       return { trackingLink };
     },
@@ -46,7 +51,7 @@ export async function registerTrackingLinkRoutes(fastify: FastifyInstance) {
 
   fastify.get(
     "/organizations/:organizationId/tracking-links/:trackingLinkId",
-    { preHandler: [fastify.authenticate, fastify.requireOrganizationMember("VIEWER")] },
+    { preHandler: [fastify.authenticateEither, fastify.requireOrgAccess("VIEWER", ["READ"])] },
     async (request) => {
       const { organizationId, trackingLinkId } = request.params as {
         organizationId: string;
@@ -59,7 +64,7 @@ export async function registerTrackingLinkRoutes(fastify: FastifyInstance) {
 
   fastify.patch(
     "/organizations/:organizationId/tracking-links/:trackingLinkId",
-    { preHandler: [fastify.authenticate, fastify.requireOrganizationMember("MEMBER")] },
+    { preHandler: [fastify.authenticateEither, fastify.requireOrgAccess("MEMBER", ["WRITE"])] },
     async (request) => {
       const { organizationId, trackingLinkId } = request.params as {
         organizationId: string;
@@ -68,7 +73,7 @@ export async function registerTrackingLinkRoutes(fastify: FastifyInstance) {
       const input = updateTrackingLinkSchema.parse(request.body);
       const trackingLink = await updateTrackingLink(
         fastify.prisma,
-        request.user!.id,
+        actorIdOf(request),
         organizationId,
         trackingLinkId,
         input,
@@ -84,18 +89,13 @@ export async function registerTrackingLinkRoutes(fastify: FastifyInstance) {
   ] as const) {
     fastify.post(
       `/organizations/:organizationId/tracking-links/:trackingLinkId/${action.path}`,
-      { preHandler: [fastify.authenticate, fastify.requireOrganizationMember("ADMIN")] },
+      { preHandler: [fastify.authenticateEither, fastify.requireOrgAccess("ADMIN", ["WRITE"])] },
       async (request) => {
         const { organizationId, trackingLinkId } = request.params as {
           organizationId: string;
           trackingLinkId: string;
         };
-        const trackingLink = await action.fn(
-          fastify.prisma,
-          request.user!.id,
-          organizationId,
-          trackingLinkId,
-        );
+        const trackingLink = await action.fn(fastify.prisma, actorIdOf(request), organizationId, trackingLinkId);
         return { trackingLink };
       },
     );
@@ -104,16 +104,18 @@ export async function registerTrackingLinkRoutes(fastify: FastifyInstance) {
   // --- Nested, campaign-scoped routes (Phase 6) ---------------------------
   fastify.get(
     "/organizations/:organizationId/campaigns/:campaignId/tracking-links",
-    { preHandler: [fastify.authenticate, fastify.requireOrganizationMember("VIEWER")] },
+    { preHandler: [fastify.authenticateEither, fastify.requireOrgAccess("VIEWER", ["READ"])] },
     async (request) => {
       const { organizationId, campaignId } = request.params as {
         organizationId: string;
         campaignId: string;
       };
+      const query = listTrackingLinksQuerySchema.parse(request.query);
       const trackingLinks = await listTrackingLinksForCampaign(
         fastify.prisma,
         organizationId,
         campaignId,
+        query,
       );
       return { trackingLinks };
     },
@@ -121,7 +123,7 @@ export async function registerTrackingLinkRoutes(fastify: FastifyInstance) {
 
   fastify.post(
     "/organizations/:organizationId/campaigns/:campaignId/tracking-links",
-    { preHandler: [fastify.authenticate, fastify.requireOrganizationMember("MEMBER")] },
+    { preHandler: [fastify.authenticateEither, fastify.requireOrgAccess("MEMBER", ["WRITE"])] },
     async (request, reply) => {
       const { organizationId, campaignId } = request.params as {
         organizationId: string;
@@ -130,7 +132,7 @@ export async function registerTrackingLinkRoutes(fastify: FastifyInstance) {
       const input = createTrackingLinkForCampaignSchema.parse(request.body);
       // campaignId comes from the URL path, never the body — there is no
       // client-supplied value here to cross-check or mistrust.
-      const trackingLink = await createTrackingLink(fastify.prisma, request.user!.id, organizationId, {
+      const trackingLink = await createTrackingLink(fastify.prisma, actorIdOf(request), organizationId, {
         ...input,
         campaignId,
       });
@@ -141,7 +143,7 @@ export async function registerTrackingLinkRoutes(fastify: FastifyInstance) {
 
   fastify.get(
     "/organizations/:organizationId/campaigns/:campaignId/tracking-links/:trackingLinkId",
-    { preHandler: [fastify.authenticate, fastify.requireOrganizationMember("VIEWER")] },
+    { preHandler: [fastify.authenticateEither, fastify.requireOrgAccess("VIEWER", ["READ"])] },
     async (request) => {
       const { organizationId, campaignId, trackingLinkId } = request.params as {
         organizationId: string;
@@ -160,7 +162,7 @@ export async function registerTrackingLinkRoutes(fastify: FastifyInstance) {
 
   fastify.patch(
     "/organizations/:organizationId/campaigns/:campaignId/tracking-links/:trackingLinkId",
-    { preHandler: [fastify.authenticate, fastify.requireOrganizationMember("MEMBER")] },
+    { preHandler: [fastify.authenticateEither, fastify.requireOrgAccess("MEMBER", ["WRITE"])] },
     async (request) => {
       const { organizationId, campaignId, trackingLinkId } = request.params as {
         organizationId: string;
@@ -174,7 +176,7 @@ export async function registerTrackingLinkRoutes(fastify: FastifyInstance) {
       const input = updateTrackingLinkSchema.parse(request.body);
       const trackingLink = await updateTrackingLink(
         fastify.prisma,
-        request.user!.id,
+        actorIdOf(request),
         organizationId,
         trackingLinkId,
         input,
@@ -190,7 +192,7 @@ export async function registerTrackingLinkRoutes(fastify: FastifyInstance) {
   ] as const) {
     fastify.post(
       `/organizations/:organizationId/campaigns/:campaignId/tracking-links/:trackingLinkId/${action.path}`,
-      { preHandler: [fastify.authenticate, fastify.requireOrganizationMember("ADMIN")] },
+      { preHandler: [fastify.authenticateEither, fastify.requireOrgAccess("ADMIN", ["WRITE"])] },
       async (request) => {
         const { organizationId, campaignId, trackingLinkId } = request.params as {
           organizationId: string;
@@ -198,12 +200,7 @@ export async function registerTrackingLinkRoutes(fastify: FastifyInstance) {
           trackingLinkId: string;
         };
         await getTrackingLinkForCampaign(fastify.prisma, organizationId, campaignId, trackingLinkId);
-        const trackingLink = await action.fn(
-          fastify.prisma,
-          request.user!.id,
-          organizationId,
-          trackingLinkId,
-        );
+        const trackingLink = await action.fn(fastify.prisma, actorIdOf(request), organizationId, trackingLinkId);
         return { trackingLink };
       },
     );

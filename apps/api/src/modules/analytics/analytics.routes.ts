@@ -19,9 +19,10 @@ import {
 /**
  * All analytics endpoints are read-only and organization-scoped, gated by
  * VIEWER — the existing minimum role for read access elsewhere (domains,
- * campaigns, etc.). There is no analytics-specific authorization path;
- * this reuses fastify.authenticate / requireOrganizationMember exactly as
- * every other module does.
+ * campaigns, etc.). Phase 11 additionally accepts a public API key
+ * carrying READ or REPORTS scope via `authenticateEither`/
+ * `requireOrgAccess` (apps/api/src/plugins/api-key-auth.ts); a dashboard
+ * session's behavior is completely unchanged.
  */
 function toFilters(
   organizationId: string,
@@ -50,7 +51,7 @@ function rangeOf(input: { from: Date; to: Date; timezone: string }) {
 }
 
 export async function registerAnalyticsRoutes(fastify: FastifyInstance) {
-  const preHandler = [fastify.authenticate, fastify.requireOrganizationMember("VIEWER")];
+  const preHandler = [fastify.authenticateEither, fastify.requireOrgAccess("VIEWER", ["READ", "REPORTS"])];
 
   fastify.get(
     "/organizations/:organizationId/analytics/clicks/summary",

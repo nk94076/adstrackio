@@ -11,6 +11,15 @@ import {
 import type { CreateCampaignInput, UpdateCampaignInput } from "@adstrackio/validation";
 import { writeAuditLog } from "../audit-logs/audit-log.service.js";
 import { assertDestinationAssignable, assertTrackingDomainAssignable } from "../shared/org-scoped-refs.js";
+import { publishEvent } from "../webhooks/outbox.service.js";
+
+function campaignEventPayload(campaign: {
+  id: string;
+  name: string;
+  status: string;
+}): Record<string, unknown> {
+  return { id: campaign.id, name: campaign.name, status: campaign.status };
+}
 
 // safePageUrl is a server-configured, admin-entered URL (not the
 // request-supplied transparent redirection_url the tracker follows for
@@ -83,14 +92,28 @@ export async function createCampaign(
       metadata: { name: campaign.name, status: campaign.status },
     });
 
+    await publishEvent(tx, {
+      organizationId,
+      type: "campaign.created",
+      aggregateType: "Campaign",
+      aggregateId: campaign.id,
+      payload: campaignEventPayload(campaign),
+    });
+
     return campaign;
   });
 }
 
-export async function listCampaigns(prisma: PrismaClient, organizationId: string) {
+export async function listCampaigns(
+  prisma: PrismaClient,
+  organizationId: string,
+  query: { take: number; cursor?: string },
+) {
   return prisma.campaign.findMany({
     where: { organizationId },
     orderBy: { createdAt: "desc" },
+    take: query.take,
+    ...(query.cursor ? { skip: 1, cursor: { id: query.cursor } } : {}),
   });
 }
 
@@ -163,6 +186,14 @@ export async function updateCampaign(
       action: "campaign.updated",
       entityType: "Campaign",
       entityId: campaign.id,
+    });
+
+    await publishEvent(tx, {
+      organizationId,
+      type: "campaign.updated",
+      aggregateType: "Campaign",
+      aggregateId: campaign.id,
+      payload: campaignEventPayload(campaign),
     });
 
     return campaign;
