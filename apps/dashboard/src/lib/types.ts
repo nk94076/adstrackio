@@ -159,6 +159,10 @@ export interface AffiliatePartnerPerformanceRow {
   conversions: number;
   approvedConversions: number;
   conversionRate: number;
+  approvedConversionRate: number;
+  totalConversionValue: number;
+  approvedConversionValue: number;
+  epc: number;
 }
 
 export type ReferralConfigurationType = "NORMAL" | "HIDE" | "CUSTOM_PARTNER_ATTRIBUTION";
@@ -184,7 +188,7 @@ export interface ReferralConfiguration {
   createdAt: string;
 }
 
-export type TimeseriesBucket = "hour" | "day" | "week";
+export type TimeseriesBucket = "hour" | "day" | "week" | "month";
 
 export interface AnalyticsRange {
   from: string;
@@ -258,6 +262,81 @@ export interface ConversionSummary {
   totalConversionValue: number;
   approvedConversionValue: number;
   humanClicksInRange: number;
+  conversionRate: number;
+  /** Phase 10: identical value to conversionRate — see
+   * docs/architecture/attribution-reporting.md#metric-formulas. */
+  approvedConversionRate: number;
+  /** Phase 10: EPC ("earnings per click") = approvedConversionValue /
+   * humanClicksInRange. A currency-per-click figure, not a percentage. */
+  epc: number;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10: Attribution & Advanced Reporting — see
+// docs/architecture/attribution-reporting.md.
+// ---------------------------------------------------------------------------
+
+export interface ReportOverview {
+  clicks: ClickSummary;
+  conversions: ConversionSummary;
+}
+
+export interface ReportTimeseriesPoint {
+  bucket: string;
+  clicks: number;
+  humanClicks: number;
+  botClicks: number;
+  uniqueClicksInBucket: number;
+  conversions: number;
+  approvedConversions: number;
+  totalConversionValue: number;
+  approvedConversionValue: number;
+}
+
+export interface CampaignPerformanceRow {
+  campaignId: string;
+  name: string;
+  status: CampaignStatus;
+  clicks: number;
+  humanClicks: number;
+  botClicks: number;
+  uniqueClicksInRange: number;
+  conversions: number;
+  approvedConversions: number;
+  totalConversionValue: number;
+  approvedConversionValue: number;
+  conversionRate: number;
+  approvedConversionRate: number;
+  epc: number;
+}
+
+export interface TrackingLinkPerformanceRow {
+  trackingLinkId: string;
+  slug: string;
+  campaignId: string;
+  affiliatePartnerId: string | null;
+  status: TrackingLinkStatus;
+  clicks: number;
+  humanClicks: number;
+  uniqueClicksInRange: number;
+  conversions: number;
+  approvedConversions: number;
+  totalConversionValue: number;
+  approvedConversionValue: number;
+  conversionRate: number;
+  approvedConversionRate: number;
+  epc: number;
+}
+
+export type ReportDimension = "country" | "deviceType" | "browser" | "os" | "botClassification";
+
+export interface DimensionBreakdownRow {
+  key: string;
+  clicks: number;
+  humanClicks: number;
+  uniqueClicksInRange: number;
+  conversions: number;
+  approvedConversions: number;
   conversionRate: number;
 }
 
