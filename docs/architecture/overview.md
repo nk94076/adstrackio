@@ -2,8 +2,8 @@
 
 ## Status
 
-This document describes AdstrackIO's architecture as of **Phase 11
-(API + Integrations)**. Phase 1 established the monorepo, data model,
+This document describes AdstrackIO's architecture as of **Phase 12
+(Google Certification Preparation & Submission)**. Phase 1 established the monorepo, data model,
 authentication, and API foundation; Phase 2 (Domain Manager) added real
 DNS verification and domain activation; Phase 3 added the real tracker
 redirect endpoint; Phase 4 added User-Agent/geo enrichment on `Click` rows
@@ -49,9 +49,16 @@ destination validation) that fires on Phase 7/9's existing conversion/
 affiliate-partner/campaign/tracking-link lifecycle mutations, delivered
 by a minimal PostgreSQL-backed queue with zero new synchronous calls
 anywhere in `apps/tracker` — see `docs/api/overview.md` and
-`docs/architecture/api-integrations.md`. Later phases (Google
-Certification) build on top of what's here, without requiring a rewrite
-of it.
+`docs/architecture/api-integrations.md`. Phase 12 audited every redirect
+path added across Phases 3–11 against the Google Transparent Click
+Tracker transparency requirement, found the existing architecture already
+compliant by construction, added an explicit compliance test suite and a
+`pnpm compliance:test` tool, and produced certification-readiness
+documentation — see `docs/compliance/google-transparent-click-tracker.md`,
+`docs/compliance/google-certification-checklist.md`, and
+`docs/compliance/redirect-audit.md`. This is preparation for a future
+manual submission and review, not a certification grant — no phase in
+this codebase can certify itself.
 
 Nothing described as "future" or "not implemented" below exists yet. This
 document is written to stay accurate as those phases land — update it as
