@@ -47,6 +47,25 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
   fastify.get("/health", async () => ({ status: "ok", service: "api" }));
 
+  // Liveness (/health, above) only proves the process is running.
+  // Readiness additionally proves it can actually serve requests that
+  // touch the database — a load balancer/orchestrator/container
+  // healthcheck should stop routing traffic here (without restarting
+  // the process) when this returns 503, e.g. during a database
+  // failover. Deliberately not on any hot request path: it is its own
+  // endpoint, checked out-of-band by infrastructure, never called as
+  // part of handling a real request.
+  fastify.get("/ready", async (_request, reply) => {
+    try {
+      await fastify.prisma.$queryRaw`SELECT 1`;
+      return { status: "ready", service: "api" };
+    } catch (error) {
+      fastify.log.error(error, "readiness check failed: database unreachable");
+      reply.status(503);
+      return { status: "not_ready", service: "api" };
+    }
+  });
+
   await fastify.register(
     async (v1) => {
       await registerAuthRoutes(v1, { env: options.env });

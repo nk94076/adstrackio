@@ -85,6 +85,18 @@ describe("tracker service boundary", () => {
     expect(response.json()).toEqual({ status: "ok", service: "tracker" });
   });
 
+  it("exposes a readiness check that confirms database connectivity", async () => {
+    app = await buildTrackerApp({
+      env: testEnv,
+      logger: false,
+      resolver: fakeHumanResolver(),
+      botDetectionEngine: fakeBotEngine("HUMAN"),
+    });
+    const response = await app.inject({ method: "GET", url: "/ready" });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ status: "ready", service: "tracker" });
+  });
+
   it("rejects a request with no redirection_url", async () => {
     app = await buildTrackerApp({
       env: testEnv,
