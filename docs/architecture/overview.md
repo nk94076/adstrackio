@@ -2,8 +2,8 @@
 
 ## Status
 
-This document describes AdstrackIO's architecture as of **Phase 12
-(Google Certification Preparation & Submission)**. Phase 1 established the monorepo, data model,
+This document describes AdstrackIO's architecture as of **Phase 13
+(Production Launch & Certification Evidence)**. Phase 1 established the monorepo, data model,
 authentication, and API foundation; Phase 2 (Domain Manager) added real
 DNS verification and domain activation; Phase 3 added the real tracker
 redirect endpoint; Phase 4 added User-Agent/geo enrichment on `Click` rows
@@ -56,9 +56,22 @@ compliant by construction, added an explicit compliance test suite and a
 `pnpm compliance:test` tool, and produced certification-readiness
 documentation — see `docs/compliance/google-transparent-click-tracker.md`,
 `docs/compliance/google-certification-checklist.md`, and
-`docs/compliance/redirect-audit.md`. This is preparation for a future
-manual submission and review, not a certification grant — no phase in
-this codebase can certify itself.
+`docs/compliance/redirect-audit.md`. Phase 13 (Production Launch &
+Certification Evidence) added production container images
+(`apps/*/Dockerfile`) and a deployment procedure
+(`docs/deployment/production.md`), `/ready` readiness endpoints on
+`apps/api`/`apps/tracker` distinct from the pre-existing `/health`
+liveness check, extended `pnpm compliance:test`'s remote mode to print
+raw HTTP evidence for a real production tracking link, and consolidated
+a certification evidence package
+(`docs/compliance/google-certification-evidence.md`) and production
+tracker verification procedure
+(`docs/compliance/production-tracker-verification.md`) on top of Phase
+12's audit — no changes to the tracker's redirect/routing/attribution
+logic itself. This is preparation for a future manual submission and
+review, not a certification grant, and no phase in this codebase can
+certify itself or claims to have completed a real production
+deployment.
 
 Nothing described as "future" or "not implemented" below exists yet. This
 document is written to stay accurate as those phases land — update it as
