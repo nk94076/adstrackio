@@ -17,6 +17,8 @@ const NAV_ITEMS = [
   { href: "/reports", label: "Reports" },
   { href: "/referrals", label: "Referrals" },
   { href: "/audit-logs", label: "Audit Logs" },
+  { href: "/api-keys", label: "API Keys" },
+  { href: "/webhooks", label: "Webhooks" },
   { href: "/settings", label: "Settings" },
 ];
 
