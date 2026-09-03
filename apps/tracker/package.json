@@ -4,13 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx watch --conditions=development src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "lint": "eslint . --ext .ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "compliance:test": "tsx scripts/compliance-test.ts"
+    "compliance:test": "tsx --conditions=development scripts/compliance-test.ts"
   },
   "dependencies": {
     "@adstrackio/config": "workspace:*",
