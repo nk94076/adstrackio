@@ -81,6 +81,43 @@ checked off.
       form, business/contact details, the specific domain(s) being
       submitted) is an operator action outside this repository's scope.
 
+## Running `pnpm compliance:test` against a real deployment
+
+`pnpm compliance:test -- --remote` requires `TRACKER_URL` (the deployment
+to test against). By default it only runs the checks that don't need a
+known, real tracking slug — connectivity, missing-parameter rejection,
+dangerous-protocol rejection, unknown-slug handling. Three further
+environment variables, all optional, extend it to a real tracking link
+the operator controls:
+
+- **`COMPLIANCE_TEST_HOSTNAME`** and **`COMPLIANCE_TEST_SLUG`** — when
+  BOTH are set, the tool sends a real request to `TRACKER_URL` for
+  `/<COMPLIANCE_TEST_SLUG>?redirection_url=...`, with an explicit
+  `Host: <COMPLIANCE_TEST_HOSTNAME>` header (independent of whatever
+  host `TRACKER_URL` itself resolves to, the same virtual-hosting
+  technique a CDN or load balancer uses), and verifies the immediate
+  HTTP response is a 3xx redirect whose `Location` header is exactly the
+  `redirection_url` the tool sent — the same check LOCAL mode always
+  runs, now proven against a live instance instead of an in-process one.
+- **`COMPLIANCE_TEST_SAFE_PAGE_URL`** — when set alongside the two
+  above, additionally sends a bot-classified request to the same
+  tracking link and verifies it redirects to exactly this URL. This
+  check only runs when the expected Safe Page URL is supplied
+  explicitly by the operator; the tool never guesses at what a real
+  deployment's Safe Page is configured to, so without this variable the
+  check is reported as SKIPPED, not assumed to pass.
+
+Whatever tracking link is referenced by `COMPLIANCE_TEST_HOSTNAME`/
+`COMPLIANCE_TEST_SLUG` must already exist, be `ACTIVE`, and belong to a
+`VERIFIED`/active `TrackingDomain` — the tool only issues `GET` requests
+against the tracker's own redirect endpoint, never any admin/mutating
+API, so it cannot create, verify, or activate a tracking link on the
+operator's behalf. Checks that would require mutating real production
+state to observe (deactivating a live domain, for example) stay
+deliberately unimplemented and reported as SKIPPED — see
+`apps/tracker/scripts/compliance-test.ts`'s own header comment for the
+exact behavior.
+
 ## Evidence to provide
 
 When an operator is ready to submit, the following evidence is
