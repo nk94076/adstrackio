@@ -160,6 +160,14 @@ too-short, or placeholder `AUTH_SECRET`. The dashboard additionally needs
 `NEXT_PUBLIC_API_URL` in `apps/dashboard/.env.local` (Next.js only reads
 env files from its own app directory, not the repo root).
 
+## Production deployment
+
+See `docs/deployment/production.md` for building the production Docker
+images, required environment variables, real tracking-domain/DNS/HTTPS
+setup, migration procedure, and rollback/backup expectations. See
+`docs/compliance/google-certification-evidence.md` for the Google
+Transparent Click Tracker certification evidence package.
+
 ## Known limitations
 
 See `docs/architecture/security.md#known-limitations` for the full list

@@ -69,12 +69,16 @@ checked off.
       (`TrackingDomain.sslStatus` intentionally stays `NOT_CONFIGURED`
       until an operator provisions one — see
       `docs/compliance/google-transparent-click-tracker.md#12-known-limitations`).
-- [ ] **Production environment ready.** Requires an operator to deploy
-      `apps/api`/`apps/tracker`/`apps/dashboard` with production
-      configuration (see `.env.example` and
-      `docs/architecture/security.md`'s configuration guidance) — not
-      completed as part of this phase, which prepares the codebase, not a
-      live deployment.
+- [ ] **Production environment ready.** Phase 13 added production
+      Dockerfiles for all three apps and a full deployment procedure —
+      see `docs/deployment/production.md` and
+      `docs/compliance/production-readiness.md`. Still unchecked: an
+      operator has to actually build and deploy them, provision a real
+      tracking domain, and complete DNS/HTTPS setup — this phase
+      prepared the codebase and procedure, not a live deployment (its
+      own `docker build` could not even be run to completion in this
+      development session, due to a sandboxed network policy — see that
+      document's §1 for the exact limitation).
 - [ ] **Certification application information prepared.** The
       documentation in this directory is written to be attachable to a
       real submission, but the submission itself (Google's application
@@ -117,6 +121,13 @@ state to observe (deactivating a live domain, for example) stay
 deliberately unimplemented and reported as SKIPPED — see
 `apps/tracker/scripts/compliance-test.ts`'s own header comment for the
 exact behavior.
+
+Phase 13 additionally made the exact-redirect check print the raw
+request/response (method, path, `Host` header, HTTP status, `Location`
+header) to stdout unconditionally, pass or fail — see
+`docs/compliance/google-certification-evidence.md` and
+`docs/compliance/production-tracker-verification.md`, which are built
+around pasting that output directly into a submission.
 
 ## Evidence to provide
 
