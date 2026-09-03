@@ -33,3 +33,17 @@ body {
 .badge {
   @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium;
 }
+
+.nav-link { @apply flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400 transition hover:bg-white/5 hover:text-white; }
+.nav-link-active { @apply bg-[#7060e8] text-white shadow-lg shadow-[#09071f]/20; }
+.eyebrow { @apply text-[11px] font-bold uppercase tracking-[.14em] text-[#7868e8]; }
+.btn-violet { @apply inline-flex h-10 items-center justify-center rounded-lg bg-[#7060e8] px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-[#5f4fd5] disabled:cursor-not-allowed disabled:opacity-50; }
+.panel { @apply rounded-2xl border border-[#e8e9f0] bg-white shadow-[0_2px_8px_rgba(28,31,61,.03)]; }
+.metric-card { @apply panel relative min-h-[158px] p-5; }
+.metric-label { @apply mt-4 text-sm font-medium text-slate-500; }.metric-value { @apply mt-1 text-2xl font-bold tracking-tight text-[#25283c]; }.metric-detail { @apply mt-1 text-xs text-slate-400; }
+.panel-title { @apply text-base font-bold text-[#292c40]; }.panel-copy { @apply mt-1 text-sm text-slate-400; }
+.status-pill { @apply inline-flex rounded-full px-2.5 py-1 text-[11px] font-bold tracking-wide; }.status-active { @apply bg-emerald-50 text-emerald-600; }.status-draft { @apply bg-slate-100 text-slate-500; }.status-paused { @apply bg-amber-50 text-amber-600; }.status-archived { @apply bg-slate-100 text-slate-400; }
+.filter-button { @apply h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-500 hover:bg-slate-50; }
+.campaign-table { @apply w-full min-w-[780px] text-left text-sm; }.campaign-table th { @apply bg-[#fafbfc] px-5 py-3 text-[11px] font-bold uppercase tracking-wide text-slate-400; }.campaign-table td { @apply border-t border-slate-100 px-5 py-4; }
+.wizard-step { @apply flex items-start gap-3 rounded-lg px-3 py-3 text-sm font-medium text-slate-400; }.wizard-step > span { @apply grid h-6 w-6 shrink-0 place-items-center rounded-full border border-slate-300 text-xs; }.wizard-step small { @apply text-[11px] text-[#7565e7]; }.wizard-step-active { @apply bg-[#f0edff] text-[#5f50cb]; }.wizard-step-active > span, .wizard-step-done > span { @apply border-[#7060e8] bg-[#7060e8] text-white; }.wizard-step-done { @apply text-slate-600; }
+.wizard-title { @apply mt-2 text-xl font-bold tracking-tight text-[#272a3e]; }.wizard-copy { @apply mt-2 text-sm leading-6 text-slate-500; }.form-label { @apply mb-2 mt-6 block text-sm font-semibold text-slate-700; }.form-label b { @apply text-[#7060e8]; }.form-label span { @apply font-normal text-slate-400; }.wizard-input { @apply block h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none transition placeholder:text-slate-300 focus:border-[#7564ed] focus:ring-2 focus:ring-[#eeeaff]; }.review-card { @apply mt-6 divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200; }.review-card p { @apply flex flex-col gap-1 p-4 text-sm sm:flex-row sm:justify-between; }.review-card span { @apply text-slate-400; }.review-card b { @apply font-semibold text-slate-700; }
