@@ -24,6 +24,19 @@ FROM node:20-alpine AS build
 RUN corepack enable
 WORKDIR /repo
 
+# pnpm 10 prompts for confirmation before removing/recreating the
+# modules directory in some install/prune scenarios; with no TTY
+# attached (every `docker build`, and CI generally), that prompt can't
+# be answered and pnpm aborts with
+# ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY instead of hanging. Setting
+# CI=true (pnpm's own recognized non-interactive signal, the same one
+# npm/yarn honor) tells it to skip the prompt and proceed, for every
+# pnpm command below — install, db:generate, the turbo build, and
+# `pnpm prune --prod`. This is scoped to this build stage only, not a
+# global `pnpm config set confirmModulesPurge false` — it never weakens
+# the safety check for a developer running these same commands locally.
+ENV CI=true
+
 COPY . .
 RUN pnpm install --frozen-lockfile
 RUN pnpm db:generate
