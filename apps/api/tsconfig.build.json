@@ -4,7 +4,18 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    // apps/api is a terminal Node process (`node dist/index.js`), never
+    // imported by another package — nothing consumes its .d.ts output,
+    // so there is no reason to pay for declaration emit here (unlike
+    // the workspace packages under packages/*, which genuinely are
+    // consumed elsewhere and keep it). This also avoids TS2742
+    // ("cannot be named without a reference to ...") on any inferred
+    // return type that touches @adstrackio/database's Prisma-generated
+    // client, whose custom output path (see
+    // packages/database/prisma/schema.prisma) is outside node_modules.
+    "declaration": false,
+    "declarationMap": false
   },
   "include": ["src"],
   "exclude": ["**/*.test.ts"]

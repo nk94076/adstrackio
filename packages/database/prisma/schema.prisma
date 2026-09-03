@@ -11,6 +11,26 @@
 
 generator client {
   provider = "prisma-client-js"
+  // Custom output (rather than the default node_modules/.prisma/client)
+  // so the generated client is a plain, ordinary set of files living
+  // inside this package — deterministically copied by `pnpm deploy`
+  // (production runtime packaging, see apps/api/Dockerfile and
+  // apps/tracker/Dockerfile) exactly like any other source file, with
+  // no dependency on node_modules/@prisma/client's own postinstall
+  // generate-on-install behavior, which does not reliably survive a
+  // `pnpm deploy` re-resolve from the content-addressable store.
+  output = "../generated/client"
+  // "native" generates the engine for wherever `prisma generate` runs
+  // (local dev, CI). The two "linux-musl*" targets generate the engine
+  // binaries for the actual production runtime — apps/api/Dockerfile
+  // and apps/tracker/Dockerfile build FROM node:20-alpine, which uses
+  // musl libc (not the glibc "debian-openssl-3.0.x" engine "native"
+  // alone would produce) — covering both common Docker platforms
+  // (amd64 and arm64). Without this, only the "native" (glibc) engine
+  // is generated, which cannot run on the Alpine-based production image
+  // at all — a separate latent bug from the workspace-package
+  // resolution issue this phase otherwise fixes.
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "linux-musl-arm64-openssl-3.0.x"]
 }
 
 datasource db {

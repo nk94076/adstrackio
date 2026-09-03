@@ -14,11 +14,28 @@
 #
 # This image does not run migrations — see apps/api/Dockerfile's
 # `migrate` stage, which is the one place in this repository that ships
-# the `prisma` CLI. This build stage installs, generates the Prisma
-# client, builds, then prunes devDependencies before the runtime stage
-# copies the result — correctness and a reasonably small image, not a
-# fully pruned single-package bundle (see docs/deployment/production.md
-# for the tradeoff).
+# the `prisma` CLI.
+#
+# Why `pnpm deploy`, not `pnpm prune --prod`:
+# The obvious approach — `pnpm prune --prod` on the built /repo, then
+# copy all of /repo into the runtime stage — silently produces a BROKEN
+# image in this workspace layout: `pnpm prune --prod` does not merely
+# remove devDependency packages here, it removes node_modules content
+# needed by @adstrackio/tracker's own runtime dependencies too
+# (confirmed by direct inspection: apps/tracker/node_modules and the
+# workspace symlinks under it, including @adstrackio/config, do not
+# survive it), which is exactly what caused the ERR_MODULE_NOT_FOUND
+# crash loop on @adstrackio/config in production. `pnpm deploy` is
+# pnpm's own purpose-built command for extracting ONE package from a
+# workspace into a standalone, runnable directory — it resolves the
+# full production dependency graph (including workspace packages) into
+# real files under the target directory's own node_modules, so the
+# runtime stage below needs nothing from outside what gets copied into
+# it. `--legacy` is required because this workspace does not set
+# `inject-workspace-packages=true` in .npmrc (that setting changes how
+# EVERY `pnpm install` links workspace packages, including for local
+# development — out of scope for a production-packaging fix); the
+# legacy deploy implementation works without it.
 
 FROM node:20-alpine AS build
 RUN corepack enable
@@ -32,23 +49,24 @@ WORKDIR /repo
 # CI=true (pnpm's own recognized non-interactive signal, the same one
 # npm/yarn honor) tells it to skip the prompt and proceed, for every
 # pnpm command below — install, db:generate, the turbo build, and
-# `pnpm prune --prod`. This is scoped to this build stage only, not a
-# global `pnpm config set confirmModulesPurge false` — it never weakens
-# the safety check for a developer running these same commands locally.
+# `pnpm deploy`. This is scoped to this build stage only, not a global
+# `pnpm config set confirmModulesPurge false` — it never weakens the
+# safety check for a developer running these same commands locally.
 ENV CI=true
 
 COPY . .
 RUN pnpm install --frozen-lockfile
 RUN pnpm db:generate
 RUN pnpm exec turbo run build --filter=@adstrackio/tracker
-RUN pnpm prune --prod
+
+FROM build AS deployed
+RUN pnpm --filter @adstrackio/tracker deploy --prod --legacy /deploy
 
 FROM node:20-alpine AS runtime
 ENV NODE_ENV=production
 RUN addgroup -S adstrackio && adduser -S adstrackio -G adstrackio
-WORKDIR /repo
-COPY --from=build /repo /repo
-WORKDIR /repo/apps/tracker
+WORKDIR /app
+COPY --chown=adstrackio:adstrackio --from=deployed /deploy /app
 USER adstrackio
 
 EXPOSE 4100
