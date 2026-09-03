@@ -25,6 +25,12 @@ WORKDIR /repo
 ARG NEXT_PUBLIC_API_URL=http://localhost:4000
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 ENV NODE_ENV=production
+# See apps/tracker/Dockerfile's ENV CI=true comment: this image doesn't
+# run `pnpm prune`, but `pnpm install` itself can hit the same
+# no-TTY modules-dir confirmation prompt (e.g. on lockfile/node_modules
+# drift) — set consistently across every Dockerfile in this repo so no
+# pnpm command anywhere in a `docker build` can block on stdin.
+ENV CI=true
 
 COPY . .
 RUN pnpm install --frozen-lockfile
