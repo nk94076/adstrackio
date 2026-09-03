@@ -53,3 +53,20 @@ export const updateCampaignSchema = z.object({
   metadata: z.record(z.unknown()).optional(),
 });
 export type UpdateCampaignInput = z.infer<typeof updateCampaignSchema>;
+
+/**
+ * Cursor-bounded list query (Phase 11: API + Integrations) — mirrors the
+ * shape `listConversionsQuerySchema`/`listApiKeysQuerySchema` already use.
+ * `GET .../campaigns` predates pagination (Phase 1) and returned every
+ * row unconditionally; now that it's also reachable by an external API
+ * key (not just a dashboard session), an unbounded result set is a more
+ * credible concern, so this phase adds the same bound every other list
+ * endpoint already enforces. The default (100) is generous enough that
+ * no existing dashboard view's behavior changes for any realistically-
+ * sized organization.
+ */
+export const listCampaignsQuerySchema = z.object({
+  take: z.coerce.number().int().min(1).max(200).default(100),
+  cursor: z.string().cuid().optional(),
+});
+export type ListCampaignsQuery = z.infer<typeof listCampaignsQuerySchema>;

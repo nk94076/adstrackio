@@ -57,3 +57,13 @@ export const updateTrackingLinkSchema = z.object({
   metadata: z.record(z.unknown()).optional(),
 });
 export type UpdateTrackingLinkInput = z.infer<typeof updateTrackingLinkSchema>;
+
+/** Cursor-bounded list query (Phase 11) — see campaigns.ts's
+ * `listCampaignsQuerySchema` doc comment for why this bound was added to
+ * a previously-unbounded (Phase 1/6) list endpoint now that it's also
+ * reachable by an external API key. */
+export const listTrackingLinksQuerySchema = z.object({
+  take: z.coerce.number().int().min(1).max(200).default(100),
+  cursor: z.string().cuid().optional(),
+});
+export type ListTrackingLinksQuery = z.infer<typeof listTrackingLinksQuerySchema>;
