@@ -89,6 +89,27 @@ RUN pnpm --filter @adstrackio/api deploy --prod --legacy /deploy
 
 FROM node:20-alpine AS runtime
 ENV NODE_ENV=production
+# Pin the Prisma query engine explicitly rather than letting
+# @prisma/client auto-detect it at startup. On this exact base image
+# (node:20-alpine, musl libc, OpenSSL 3), Prisma's own runtime platform
+# detection has been observed to identify itself as the legacy bare
+# "linux-musl" target (an OpenSSL-1.1-linked engine Prisma stopped
+# building this Docker image against once OpenSSL 3 support was added)
+# instead of "linux-musl-openssl-3.0.x", causing
+# `Error loading shared library libssl.so.1.1: No such file or
+# directory` — libssl.so.1.1 was never installed on this image and
+# never will be; that's not a dependency this image is missing, it's
+# Prisma choosing the wrong one of the several engines
+# packages/database/prisma/schema.prisma's `binaryTargets` already
+# generates and pnpm deploy already ships (see the "deployed" stage
+# above). Setting PRISMA_QUERY_ENGINE_LIBRARY bypasses that detection
+# entirely and always loads the correct, already-present OpenSSL-3
+# musl engine. This is the x86_64 (amd64) engine, matching this
+# image's actual VPS production architecture; an arm64 build of this
+# image would need the sibling
+# libquery_engine-linux-musl-arm64-openssl-3.0.x.so.node file instead
+# (also generated, not shipped-but-unused — see binaryTargets).
+ENV PRISMA_QUERY_ENGINE_LIBRARY=/app/node_modules/@adstrackio/database/generated/client/libquery_engine-linux-musl-openssl-3.0.x.so.node
 RUN addgroup -S adstrackio && adduser -S adstrackio -G adstrackio
 WORKDIR /app
 COPY --chown=adstrackio:adstrackio --from=deployed /deploy /app
