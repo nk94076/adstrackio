@@ -65,6 +65,26 @@ export async function buildTrackerApp(options: BuildTrackerAppOptions): Promise<
 
   fastify.get("/health", async () => ({ status: "ok", service: "tracker" }));
 
+  // Liveness (/health, above) only proves the process is running.
+  // Readiness additionally proves it can actually resolve tracking
+  // links — a load balancer/orchestrator/container healthcheck should
+  // stop routing Google Ads click traffic here (without restarting the
+  // process) when this returns 503, e.g. during a database failover.
+  // This is its own endpoint, checked out-of-band by infrastructure: it
+  // adds no synchronous work to the GET /:slug redirect route itself,
+  // which never calls this handler or awaits anything beyond what it
+  // already did before this endpoint existed.
+  fastify.get("/ready", async (_request, reply) => {
+    try {
+      await fastify.prisma.$queryRaw`SELECT 1`;
+      return { status: "ready", service: "tracker" };
+    } catch (error) {
+      fastify.log.error(error, "readiness check failed: database unreachable");
+      reply.status(503);
+      return { status: "not_ready", service: "tracker" };
+    }
+  });
+
   const resolver = options.resolver ?? new PrismaTrackingResolver(prisma);
   const botDetectionEngine = options.botDetectionEngine ?? new HeuristicBotDetectionEngine();
   const userAgentParser = options.userAgentParser ?? new UaParserUserAgentParser();
