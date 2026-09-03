@@ -20,7 +20,8 @@
     "db:migrate": "pnpm --filter @adstrackio/database db:migrate",
     "db:migrate:deploy": "pnpm --filter @adstrackio/database db:migrate:deploy",
     "db:studio": "pnpm --filter @adstrackio/database db:studio",
-    "db:seed": "pnpm --filter @adstrackio/database db:seed"
+    "db:seed": "pnpm --filter @adstrackio/database db:seed",
+    "compliance:test": "pnpm --filter @adstrackio/tracker compliance:test"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^8.18.0",
