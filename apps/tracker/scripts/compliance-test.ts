@@ -54,6 +54,14 @@
  * redirect endpoint — it never calls any admin/mutating API, so it
  * cannot itself change production data or domain state.
  *
+ * Phase 13 (Production Launch & Certification Evidence): the
+ * "configured real link" exact-redirect check prints the raw request/
+ * response (method, path, Host header, HTTP status, Location header)
+ * to stdout unconditionally — this is the literal evidence a real
+ * certification submission needs, and is designed to be run and pasted
+ * directly into docs/compliance/google-certification-evidence.md. See
+ * that document and docs/compliance/production-tracker-verification.md.
+ *
  * Usage:
  *   pnpm compliance:test                 # local, in-process
  *   pnpm compliance:test -- --remote     # remote, against $TRACKER_URL
@@ -373,6 +381,16 @@ export async function runRemote(
       "visible redirection_url is the exact immediate redirect target (configured real link)",
       async () => {
         const res = await rawGetWithHostHeader(baseUrl, path, testHostname, HUMAN_UA);
+        // Printed unconditionally (pass or fail) — this is the literal
+        // evidence a certification submission needs: the raw HTTP status
+        // and Location header of an immediate, un-followed response. See
+        // docs/compliance/google-certification-evidence.md.
+        console.log(
+          `  Evidence — GET ${path}\n` +
+            `             Host: ${testHostname}\n` +
+            `             -> HTTP ${res.status}\n` +
+            `             -> Location: ${res.location ?? "(none)"}\n`,
+        );
         if (res.status < 300 || res.status >= 400) {
           throw new Error(`expected a 3xx redirect, got ${res.status}`);
         }
