@@ -404,6 +404,43 @@ just a foundation schema):
   `reviewedBy`, `reviewedAt`, `rejectionReason`). Review requires the
   `ADMIN` role or higher.
 
+## API + Integrations (Phase 11)
+
+Five new models, all organization-scoped — see
+`docs/api/overview.md`/`docs/architecture/api-integrations.md` for the
+full design and `docs/architecture/security.md#api--integrations-appsapi-phase-11`
+for the security rationale behind each choice below.
+
+- `ApiKey` — `keyPrefix` (unique, plaintext lookup key) and `keyHash`
+  (SHA-256 of the full secret) are the ONLY persisted representation of
+  the credential; the raw secret itself is never stored. `scopes` is a
+  native Postgres array of the `ApiKeyScope` enum
+  (`READ`/`WRITE`/`REPORTS`/`CONVERSIONS`).
+- `WebhookEndpoint` — `secretEncrypted` holds the HMAC signing secret
+  AES-256-GCM-encrypted (not one-way hashed, since it must be retrievable
+  to sign outgoing deliveries — see the security doc). `subscribedEvents`
+  is a plain `String[]`, validated at the application layer against
+  `packages/shared/src/webhook-events.ts`'s closed list rather than a
+  Postgres enum, because Postgres enum labels can't contain the literal
+  `.` the wire-format event `type` needs (`"conversion.approved"`).
+- `OutboxEvent` — the transactional-outbox row, written in the SAME
+  transaction as the business mutation it describes (see the schema's own
+  doc comment for the full atomicity argument). `type` is likewise a
+  plain `String` for the same enum/dot-character reason.
+- `WebhookDelivery` — one row per `(webhookEndpointId, eventId)` pair
+  (`@@unique` constraint), with `attempt`/`status`/`nextAttemptAt` updated
+  in place across retries rather than one row per attempt.
+- `IdempotencyRecord` — backs the `Idempotency-Key` header on `POST`
+  conversions. Deliberately has no `status` column: a row is only ever
+  inserted as part of the same transaction as the mutation it dedupes, so
+  any row another transaction can actually read is, by construction,
+  already for a fully-completed request — see the schema's own doc
+  comment for why this simplification is sound, not merely convenient.
+
+No existing table gained a column in this phase, and no existing
+model's meaning changed — every new model is additive, following the
+same "extend, don't rewrite" posture every prior phase has kept.
+
 ## Audit logging
 
 `AuditLog` is intentionally schema-light: `action` is a free-text,

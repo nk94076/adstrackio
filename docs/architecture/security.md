@@ -706,6 +706,178 @@ this section covers its security-relevant properties specifically.
   endpoint. There is no report action with a higher blast radius than
   "read," so there is no tier above `VIEWER` to gate.
 
+## API + Integrations (apps/api, Phase 11)
+
+Full design rationale is in `docs/api/overview.md`,
+`docs/api/authentication.md`, `docs/api/api-keys.md`, and
+`docs/api/webhooks.md`; this section covers its security-relevant
+properties specifically.
+
+- **No raw API key is ever stored, logged, or returned after
+  creation/rotation.** `ApiKey.keyHash` is a SHA-256 digest of the full
+  256-bit random secret (`packages/auth/src/api-key.ts`), compared with
+  `crypto.timingSafeEqual` — never a plain `===`. `ApiKey.keyPrefix` (a
+  10-character, non-secret slice of the secret) is the only plaintext
+  column, and exists purely as an O(1) lookup key; it alone gives an
+  attacker no meaningful head start on the remaining ~198 bits. The raw
+  key is generated, returned once in the create/rotate HTTP response, and
+  never persisted anywhere — `apps/api/test/api-integrations.test.ts`
+  asserts it never appears in a subsequent list/get response or in the
+  database row itself.
+- **Why SHA-256, not argon2id, for API keys.** `User.passwordHash` uses
+  argon2id because human passwords are low-entropy and a slow, memory-hard
+  KDF is the correct defense against offline guessing. An API key secret
+  is 256 bits of `crypto.randomBytes` — already unguessable — so hashing
+  it with a deliberately slow KDF would add ~100ms+ of self-inflicted
+  latency to every public API request and open a trivial CPU-exhaustion
+  vector, for no security benefit. This mirrors how GitHub/Stripe hash
+  API tokens. See `docs/api/api-keys.md#hashing`.
+- **Revoked and expired keys cannot authenticate**, and — critically — a
+  revoked key, an expired key, and a key that never existed all produce
+  the exact same `401 UNAUTHENTICATED` response with the same generic
+  message (`apps/api/src/plugins/api-key-auth.ts`'s `invalid()` helper) —
+  never a distinguishable error that would let a caller enumerate which
+  keys are real, revoked, or merely expired.
+- **Organization comes only from the authenticated key, never from the
+  request.** `requireOrgAccess` compares `apiKeyContext.organizationId`
+  (resolved server-side from the verified key) against the URL's own
+  `:organizationId` path segment; a mismatch is `403` before any service
+  function runs. There is no code path where a request body or query
+  parameter's `organizationId` is trusted for an API-key-authenticated
+  request — covered by a cross-org test using a fully-scoped key (all
+  four scopes) against a foreign organization's URL.
+- **Scopes are enforced, never silently widened.** `ApiKeyScope`
+  (`READ`/`WRITE`/`REPORTS`/`CONVERSIONS`) is a closed Prisma enum;
+  `requireOrgAccess(minimumRole, apiKeyScopes)` requires the presented key
+  to carry at least one of the route's declared acceptable scopes, and
+  rejects with `403` otherwise — a `REPORTS`-only key cannot create a
+  campaign, and a `READ`-only key cannot approve a conversion, each
+  covered by a dedicated test.
+- **Session auth is completely unmodified; API-key auth is strictly
+  additive.** `fastify.authenticate`/`requireOrganizationMember` (Phase 1)
+  are untouched. `authenticateEither` tries a Bearer token first and
+  falls back to the existing cookie flow otherwise; `requireOrgAccess`
+  wraps `requireOrganizationMember` for the session branch verbatim. Only
+  campaigns, tracking-links, conversions, analytics, and reports routes
+  were wired to accept API keys — organization membership management,
+  domains, referral proofs, routing rules, audit logs, and API-key/
+  webhook management itself all remain session-only, deliberately keeping
+  the externally-reachable surface no larger than what Phase 11 actually
+  asked for.
+- **Conversion attribution cannot be forged through the public API
+  either.** `createConversionSchema` (Phase 7, unchanged) has no
+  `campaignId`/`trackingLinkId`/`affiliatePartnerId` field; a machine
+  caller gets exactly the same click-derived attribution a dashboard user
+  does. Covered by a dedicated Phase 11 test that submits forged
+  attribution fields (including a different organization's ID) through an
+  API-key-authenticated request and confirms they're ignored.
+- **`Idempotency-Key` handling is concurrency-safe by database
+  construction, not by an in-memory map.** `IdempotencyRecord` is inserted
+  inside the SAME transaction as the conversion it describes; Postgres
+  blocks a second concurrent `INSERT` on the same
+  `(organizationId, scope, key)` until the first transaction resolves,
+  then either replays the first's stored response (committed) or proceeds
+  normally (rolled back) — see the schema doc comment in
+  `packages/database/prisma/schema.prisma` and
+  `docs/api/api-keys.md#idempotency`. A reused key with a different
+  request body is rejected with `409`, never silently accepted. Covered by
+  concurrent-duplicate-request and conflicting-payload tests.
+- **Webhook signing secrets are encrypted at rest, not plaintext, and
+  never returned after creation/rotation.** `WebhookEndpoint.secretEncrypted`
+  is AES-256-GCM-encrypted with a key derived from `AUTH_SECRET`
+  (`packages/auth/src/secret-box.ts`) — unlike an API key, this secret
+  must be *retrievable* server-side to compute each outgoing HMAC
+  signature, so a one-way hash isn't an option; encryption-at-rest is the
+  next-best mitigation, protecting a raw database dump while accepting
+  (and documenting, in `docs/api/webhooks.md#secret-storage`) that a
+  compromised API process could still decrypt it.
+- **Webhook payload signing is over the exact transmitted bytes.**
+  `X-Adstrackio-Signature` = `HMAC-SHA256(secret, timestamp + "." + rawBody)`,
+  computed from the literal string written to the request body — never a
+  re-`JSON.stringify`'d object, which could silently reorder keys or
+  reformat numbers and produce a signature a receiver's own
+  `JSON.stringify` could never reproduce. `X-Adstrackio-Timestamp` lets a
+  receiver reject stale/replayed deliveries (documented replay-protection
+  window: `docs/api/webhooks.md#replay-protection`).
+- **Webhook destination URLs go through a real SSRF blocklist, checked
+  twice, not a superficial hostname string match.**
+  `packages/shared/src/webhook-url.ts`'s `validateWebhookUrl` resolves the
+  hostname (or accepts an IP literal) and rejects if ANY resolved address
+  falls in loopback/unspecified/RFC1918-private/carrier-grade-NAT/
+  link-local (which covers the `169.254.169.254` cloud metadata endpoint
+  every major cloud provider uses)/documentation/multicast/reserved
+  ranges — using Node's `net.BlockList`, not hand-rolled octet math. This
+  check runs once at endpoint creation/update (fail fast, good UX) AND
+  again immediately before every single delivery attempt
+  (`webhook-delivery-worker.ts`), because DNS can change between the two
+  moments — a validation-only-at-creation-time design would let an
+  attacker register a webhook pointing at a domain they control, wait for
+  approval, then repoint DNS at an internal address for the delivery
+  itself. See `docs/api/webhooks.md#ssrf-protection` for the exact ranges
+  and the documented DNS-rebinding boundary (the delivery HTTP client
+  additionally pins its TCP connection to the specific resolved address
+  just checked, via a custom `lookup` override, rather than letting the
+  underlying HTTP library re-resolve the hostname itself at connect time).
+- **An SSRF/URL-validation failure at delivery time is treated as
+  terminal, never retried.** A destination that fails the safety check
+  will not become safe by retrying a few minutes later — misclassifying
+  it as a transient network error (which IS retried) would waste retry
+  budget and delay the terminal `FAILED` status a caller needs to see.
+- **Retries are bounded and correctly classified.** Network errors,
+  timeouts, `408`, `429`, and `5xx` are retried (exponential backoff,
+  capped at 5 total attempts, max delay 30 minutes); a normal `4xx`
+  validation failure (`400`/`401`/`403`/`404`/`422`) is `FAILED`
+  immediately — retrying an unchanged payload against a destination that
+  already rejected it cannot succeed. Covered by dedicated tests for each
+  classification, plus an exhaustion test running all 5 attempts against a
+  persistently-failing endpoint.
+- **Duplicate webhook events/deliveries cannot be created.** An
+  `OutboxEvent` is only ever written inside the same transaction, on the
+  same conditional branch, as the `writeAuditLog` call for a REAL state
+  transition (never on an idempotent no-op retry — see
+  `conversions.service.ts`'s `transitionConversionStatus`), so a retried
+  HTTP request that resolves to a no-op produces neither a duplicate audit
+  entry nor a duplicate event. `WebhookDelivery` additionally carries a
+  `@@unique([webhookEndpointId, eventId])` constraint, so re-running the
+  fan-out step (by design, safe to call repeatedly/concurrently) can never
+  produce two delivery jobs for the same endpoint+event.
+- **The webhook test-send endpoint cannot be used to inject fake business
+  data or contaminate analytics.** It writes a `WebhookEndpoint`-scoped
+  `OutboxEvent` typed `"webhook.test"` — a reserved type excluded from
+  `WEBHOOK_SUBSCRIBABLE_EVENT_TYPES` (an organization cannot "subscribe" a
+  webhook to receive test events from other organizations, and no
+  analytics/reporting query anywhere in this codebase reads
+  `OutboxEvent`/`WebhookDelivery` at all, so there is nothing for a test
+  event to contaminate even in principle) and never creates a
+  Campaign/Conversion/AffiliatePartner/TrackingLink row.
+- **API-key traffic is rate-limited separately from, and cannot exhaust,
+  another organization's quota or the dashboard's own session traffic.**
+  A second `@fastify/rate-limit` bucket (reusing the same plugin instance
+  already registered for the global per-IP baseline, via its own
+  `fastify.rateLimit()` factory — not a hand-rolled limiter or a new
+  dependency), keyed by the API key's own `id`, applies only when
+  `apiKeyContext` is set. Session-based dashboard requests are unaffected
+  and stay on the global per-IP limiter only.
+- **Public API error responses use the same closed, non-leaky format as
+  every other endpoint** (`{ error: { code, message } }` —
+  `plugins/error-handler.ts`, unchanged) — no stack traces, SQL, Prisma
+  internals, secrets, or filesystem paths in any Phase 11 response.
+  `@fastify/rate-limit`'s own thrown `429` is caught by the same handler
+  and reshaped into the identical format.
+- **`api_key.*`/`webhook.*` configuration changes are audit-logged; retry
+  attempts are not.** `api_key.created`/`.rotated`/`.revoked` and
+  `webhook.created`/`.updated`/`.secret_rotated`/`.disabled` each write
+  exactly one `AuditLog` entry per real state change (idempotent repeats
+  write none, mirroring every other lifecycle action in this codebase).
+  Webhook delivery attempts/retries are recorded in `WebhookDelivery`
+  rows, which is where that history belongs — not as audit-log noise.
+- **No synchronous network call was added to the tracker's redirect hot
+  path.** `apps/tracker` imports nothing from this phase's webhook/API-key
+  code; the delivery worker runs on a plain interval inside `apps/api`'s
+  own process, started only from `apps/api/src/index.ts` (never from
+  `buildApp`, which is what every test — and the tracker — actually
+  exercises).
+
 ## Click Analytics (apps/api, Phase 4)
 
 Full design rationale is in `docs/architecture/click-analytics.md`; this
@@ -828,3 +1000,25 @@ section covers its security-relevant properties specifically.
 - **No tracker-level rate limiting, still** (Phase 5 did not add one —
   see `docs/architecture/bot-detection.md#rate-limiting--abuse-considerations`
   for the documented extension point).
+- **The webhook delivery worker is a single-process, interval-polled
+  queue** (Phase 11) — correct and safe for this scale (`SKIP LOCKED`
+  prevents double-delivery even across multiple processes), but a claim-
+  and-execute design that holds a DB transaction open across a real HTTP
+  call, rather than a separate claim/lease/execute split. Fine for a
+  handful of deliveries per poll; a future phase handling much higher
+  webhook volume should split those steps. See
+  `docs/api/webhooks.md#delivery-architecture`.
+- **Webhook secret encryption's threat model is DB-dump exposure, not
+  API-process compromise.** Any process holding `AUTH_SECRET` (the API
+  server itself) can decrypt any stored webhook secret it can read — this
+  is inherent to any design where the server must reproduce a symmetric
+  HMAC signature, not a gap specific to this implementation. See
+  `docs/api/webhooks.md#secret-storage`.
+- **API-key rate limiting is in-memory** (the same `@fastify/rate-limit`
+  default store the global limiter already uses — see the pre-existing
+  "Rate limiting is in-memory" limitation above), so it resets on restart
+  and doesn't share state across multiple API instances yet.
+- **No CSV/Excel/PDF export, no OpenAPI/Swagger spec, and no developer
+  portal** — Phase 11 is a working API + webhook system with Markdown
+  documentation (`docs/api/`), not a full API-management product. All
+  explicitly deferred, not silently missing.
