@@ -2,8 +2,8 @@
 
 ## Status
 
-This document describes AdstrackIO's architecture as of **Phase 9
-(Affiliate/Partner System)**. Phase 1 established the monorepo, data model,
+This document describes AdstrackIO's architecture as of **Phase 10
+(Attribution & Advanced Reporting)**. Phase 1 established the monorepo, data model,
 authentication, and API foundation; Phase 2 (Domain Manager) added real
 DNS verification and domain activation; Phase 3 added the real tracker
 redirect endpoint; Phase 4 added User-Agent/geo enrichment on `Click` rows
@@ -30,9 +30,15 @@ campaign-roster assignment, and deterministic click/conversion
 attribution derived entirely from server-controlled tracking
 configuration, never client input) around the existing transparent
 tracker, with zero new synchronous calls on its redirect hot path — see
-`docs/architecture/affiliate-partners.md`. Later phases (Attribution &
-Advanced Reporting, API + Integrations, Google Certification) build on top
-of what's here, without requiring a rewrite of it.
+`docs/architecture/affiliate-partners.md`; Phase 10 added a reporting
+layer (organization-scoped overview/timeseries/campaign/tracking-link/
+dimension-breakdown reports, plus value/EPC fields on the existing
+affiliate-partner performance endpoint) built entirely on top of Phase
+4/7/9's existing `Click`/`Conversion` aggregation functions — no new
+attribution mechanism, no schema change, no new tracker code — see
+`docs/architecture/attribution-reporting.md`. Later phases (API +
+Integrations, Google Certification) build on top of what's here, without
+requiring a rewrite of it.
 
 Nothing described as "future" or "not implemented" below exists yet. This
 document is written to stay accurate as those phases land — update it as
@@ -240,6 +246,21 @@ session model and the tradeoffs this accepts.
   VIEWER/MEMBER/ADMIN tiering. Payouts, payment processing, webhooks, and
   a partner-facing portal are explicitly out of scope. See
   `docs/architecture/affiliate-partners.md`.
+- **Attribution & Advanced Reporting (Phase 10)** is implemented — a
+  read-only reporting layer
+  (`/api/v1/organizations/:organizationId/reports/{overview,timeseries,
+  campaigns,tracking-links,dimensions}`) built entirely on the existing
+  Phase 4/7/9 `Click`/`Conversion` aggregation functions: no new
+  attribution mechanism (Phase 10 documents and reports on Phase 7's
+  existing `Conversion.clickId`-derived attribution, calling it
+  "first-click" — one click per conversion, never multi-touch), no schema
+  change, no new tracker code. Adds `approvedConversionRate`/`epc`
+  (earnings-per-click) fields to the existing `ConversionSummary` and
+  `AffiliatePartnerPerformanceRow` types (both additive, existing fields
+  unchanged), a `getClicksByBotClassification` breakdown (the one
+  dimension Phase 4 hadn't added), and dimension/timeseries filters for
+  country/device/browser/OS/bot classification across every existing
+  analytics endpoint too. See `docs/architecture/attribution-reporting.md`.
 - **Postbacks/webhooks for conversion status changes** (Phase 11) are out
   of scope so far — Phase 7 exposes the conversion service functions as a
   clean boundary for a future API/integrations layer to build on, but no

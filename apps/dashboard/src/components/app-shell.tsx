@@ -14,6 +14,7 @@ const NAV_ITEMS = [
   { href: "/affiliate-partners", label: "Affiliate Partners" },
   { href: "/conversions", label: "Conversions" },
   { href: "/analytics", label: "Analytics" },
+  { href: "/reports", label: "Reports" },
   { href: "/referrals", label: "Referrals" },
   { href: "/audit-logs", label: "Audit Logs" },
   { href: "/settings", label: "Settings" },

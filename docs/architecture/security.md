@@ -647,6 +647,65 @@ this section covers its security-relevant properties specifically.
   manage partner records and campaign rosters but cannot single-handedly
   change a partner's lifecycle state.
 
+## Attribution & Advanced Reporting (apps/api, Phase 10)
+
+Full design rationale is in `docs/architecture/attribution-reporting.md`;
+this section covers its security-relevant properties specifically.
+
+- **Every report is organization-scoped through the same mechanism every
+  other module already uses.** `organizationId` comes only from the
+  authenticated, membership-checked URL path
+  (`requireOrganizationMember("VIEWER")`) — never the request body, never
+  a query parameter. A member of one organization requesting another
+  organization's `/reports/*` URL gets `403` before any report query
+  runs, covered by a dedicated test across all five report endpoints.
+- **A cross-organization filter ID cannot leak another organization's
+  data.** `campaignId`/`trackingLinkId`/`affiliatePartnerId` supplied as
+  filters are always `AND`ed together with the URL's own
+  `organizationId` in the same `WHERE` clause (`buildWhere`/
+  `buildConversionWhere`, unchanged from Phase 4/7/9) — a campaign
+  belongs to exactly one organization, so a foreign campaign's ID
+  combined with the caller's own `organizationId` matches zero rows.
+  This is a structural guarantee inherited from the existing filter-
+  building functions, not a new check added for this phase, and is
+  covered by dedicated tests proving a cross-org `campaignId`,
+  `trackingLinkId`, and `affiliatePartnerId` filter each return an empty
+  result rather than an error or another organization's rows.
+- **A forged conversion attribution attempt has no effect on any
+  report.** `createConversionSchema` (Phase 7) has no `campaignId`/
+  `trackingLinkId`/`affiliatePartnerId` field, so a client-supplied value
+  for any of them is silently stripped before a conversion is ever
+  created — a report can only ever reflect the click-derived attribution
+  Phase 7/9 already enforce. Covered by a dedicated test that submits a
+  conversion with a forged `campaignId` pointing at a different
+  organization's campaign and confirms it appears only in the click's
+  real (own-organization) campaign's report, never the forged one's.
+- **The `dimension` query parameter is a closed whitelist, never
+  interpolated into raw SQL.** `GET .../reports/dimensions` validates
+  `dimension` against `reportDimensionSchema` (a 5-value Zod enum) before
+  the request reaches `getDimensionBreakdown`, which itself only ever
+  looks up a pre-built `Prisma.Sql` column fragment from a matching
+  `Record<ReportDimension, Prisma.Sql>` — there is no code path where an
+  arbitrary string reaches a raw SQL column reference. An out-of-
+  whitelist value is rejected with `400`.
+- **Bot/suspicious traffic can never dilute a human-performance metric.**
+  Every rate/EPC formula divides by `humanClicksInRange` specifically
+  (never `totalClicks`, never unique clicks) — see
+  `docs/architecture/attribution-reporting.md#core-metrics-and-exact-formulas`.
+  This is a correctness property, not strictly an attack-surface one, but
+  it matters for the same reason Phase 5's bot-detection routing does: a
+  report an advertiser or affiliate is paid against must not be
+  inflatable by non-human traffic.
+- **No mutation, no audit-log noise.** Every report endpoint is
+  read-only (`GET`, no service-layer write anywhere in
+  `reports.routes.ts`) — there is nothing to audit-log, and this phase
+  deliberately does not generate one, consistent with "normal report
+  reads do not need audit entries."
+- **RBAC is uniformly `VIEWER`** (and therefore every higher role) across
+  all five report endpoints — identical to every existing analytics
+  endpoint. There is no report action with a higher blast radius than
+  "read," so there is no tier above `VIEWER` to gate.
+
 ## Click Analytics (apps/api, Phase 4)
 
 Full design rationale is in `docs/architecture/click-analytics.md`; this

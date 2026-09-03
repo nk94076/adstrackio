@@ -353,6 +353,24 @@ existing `CampaignAffiliatePartner`/`TrackingLink`/`Click` references — so
 historical attribution is preserved by simply never being touched, not by
 any special-cased "preserve on archive" logic.
 
+## Attribution & Advanced Reporting (Phase 10) — no schema change
+
+Phase 10 adds **no new model, no new column, no new migration**. Its
+entire reporting layer (`docs/architecture/attribution-reporting.md`) is
+PostgreSQL aggregation over columns Phase 3/4/7/9 already added to
+`Click`/`Conversion`: `Click.country`/`deviceType`/`browser`/`os`/
+`botClassification` (dimension breakdowns), `Click.ipHash`/`userAgent`
+(the unchanged Phase 4 unique-visitor definition), and
+`Conversion.status`/`value`/`campaignId`/`trackingLinkId`/`clickId`
+(performance metrics and attribution). "First-click" attribution, as
+Phase 10 documents it, is simply Phase 7's existing rule stated
+precisely: a conversion is attributed to the one `Click` its `clickId`
+names, and that click's own `campaignId`/`trackingLinkId`/
+`affiliatePartnerId` are authoritative — nothing new to enforce here that
+`enforce_conversion_click_attribution` (Phase 7) and
+`enforce_click_affiliate_partner_immutable` (Phase 9) don't already
+guarantee at the database level.
+
 ## Referral configuration & proof — the approval-gated model
 
 This is the one piece of Phase 1 with real, enforced business logic (not
