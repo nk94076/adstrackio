@@ -3,6 +3,22 @@ import { mountCampaignPage } from './campaign';
 import { mountManageCampaignsPage } from './manage-campaigns';
 import { mountCampaignDetailsPage } from './campaign-details';
 
+document.addEventListener('click', event => {
+  const editLink = (event.target as HTMLElement).closest<HTMLAnchorElement>('.details-title a.btn-primary, .detail-actions a.icon-action');
+  const match = window.location.pathname.match(/^\/campaigns\/(\d+)$/);
+  if (editLink && match) {
+    event.preventDefault();
+    window.location.assign(`/campaigns/${match[1]}/edit`);
+    return;
+  }
+  const link = (event.target as HTMLElement).closest<HTMLAnchorElement>('.nav-group > a');
+  const group = link?.parentElement;
+  if (group?.querySelector(':scope > .nav-children')) {
+    event.preventDefault();
+    group.classList.toggle('expanded');
+  }
+});
+
 const route = window.location.pathname.replace(/\/+$/, '');
 if (route === '/campaigns/create') {
   mountCampaignPage();
@@ -10,6 +26,8 @@ if (route === '/campaigns/create') {
   mountManageCampaignsPage();
 } else if (/^\/campaigns\/\d+$/.test(route)) {
   mountCampaignDetailsPage(Number(route.split('/').pop()));
+} else if (/^\/campaigns\/\d+\/edit$/.test(route)) {
+  mountCampaignPage(Number(route.split('/')[2]));
 } else {
 
 const icons = {

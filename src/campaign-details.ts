@@ -1,5 +1,6 @@
 import './campaign.css';
 import './campaign-details.css';
+import './campaign-bugfix.css';
 import './campaign-details-polish.css';
 
 export type CampaignDetails = { id:number; title:string; objective:string; visibility:string; advertiser:string; status:string; currency:string; previewUrl:string; url:string; devices:string; os:string; createdAt:string; activatedAt:string; uniqueId:string; trackingLink:string; goals:{goal:string;country:string;region:string;revenue:string;payout:string}[]; notes:string[] };

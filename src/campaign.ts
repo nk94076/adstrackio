@@ -1,4 +1,5 @@
 import './campaign.css';
+import './campaign-bugfix.css';
 import './referral.css';
 
 const icon = (name: string) => {
@@ -33,8 +34,8 @@ const input = (label: string, placeholder = '', required = false, type = 'text',
 const toggle = (label: string, checked = false, id = '') => `<label class="switch-row">${label}<span class="switch"><input type="checkbox" ${checked ? 'checked' : ''} ${id ? `id="${id}"` : ''}/><i></i></span></label>`;
 const section = (title: string, body: string, collapsible = false, open = true) => `<section class="campaign-card ${collapsible ? 'accordion' : ''} ${open ? 'is-open' : ''}"><button class="section-heading ${collapsible ? 'accordion-trigger' : ''}" ${collapsible ? 'type="button" aria-expanded="' + open + '"' : 'type="button"'}><span><em></em>${title}</span>${collapsible ? `<i>${icon('chevron')}</i>` : ''}</button><div class="section-body">${body}</div></section>`;
 
-export function mountCampaignPage() {
-  document.title = 'Create Campaign · AdstrackIO';
+export function mountCampaignPage(editId?: number) {
+  document.title = `${editId ? 'Edit' : 'Create'} Campaign · AdstrackIO`;
   document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="campaign-app">
     <aside class="app-sidebar" aria-label="Main navigation"><a class="sidebar-brand" href="/" aria-label="AdstrackIO home"><span class="brand-mark"><i></i><i></i><i></i></span><strong>Adstrack<span>IO</span></strong></a><button class="sidebar-close" type="button" aria-label="Close menu">×</button><nav>${nav.map(([name, iconName, children]) => `<div class="nav-group ${name === 'Campaigns' ? 'active expanded' : ''}"><a href="${name === 'Campaigns' ? '/campaigns' : '#'}"><span class="nav-icon">${icon(iconName)}</span><span>${name}</span>${children ? `<i class="nav-chevron">${icon('chevron')}</i>` : ''}</a>${children ? `<div class="nav-children">${children.map(child => `<a class="${child === 'Create Campaign' ? 'current' : ''}" href="${child === 'Create Campaign' ? '/campaigns/create' : '/campaigns'}">${child}</a>`).join('')}</div>` : ''}</div>`).join('')}</nav><div class="sidebar-bottom"><span class="avatar">AS</span><div><strong>Alex Singh</strong><small>Administrator</small></div><button type="button">•••</button></div></aside>
@@ -52,6 +53,20 @@ export function mountCampaignPage() {
     </main>
   </div>`;
 
+  if (editId) {
+    document.querySelector('.page-intro h1')!.textContent = 'Edit Campaign';
+    document.querySelector('.page-intro p:last-child')!.textContent = `Update campaign ID ${editId} and save your changes.`;
+    document.querySelector('.crumb strong')!.textContent = 'Edit Campaign';
+    document.querySelector<HTMLButtonElement>('[form="campaign-form"]')!.textContent = 'Save Changes';
+    document.querySelector('#save-draft')?.remove();
+    const fields = document.querySelectorAll<HTMLInputElement>('input');
+    fields.forEach(field => { if (field.placeholder.includes('Summer acquisition')) field.value = `Campaign ${editId}`; if (field.placeholder.includes('click_id')) field.value = `https://destination.example.com/campaign/${editId}?click_id={click_id}`; });
+  }
+  document.querySelectorAll<HTMLInputElement>('input[placeholder="Optional app name"], input[placeholder="Optional app identifier"]').forEach(input => input.closest('label')?.classList.add('app-only'));
+  const appFields = [...document.querySelectorAll<HTMLElement>('.app-only')];
+  const syncObjective = () => { const app = [...document.querySelectorAll<HTMLInputElement>('input[name="objective"]')].find(input => input.checked)?.parentElement?.textContent?.includes('App Installs'); appFields.forEach(field => field.classList.toggle('objective-visible', Boolean(app))); appFields.forEach(field => field.querySelectorAll<HTMLInputElement>('input').forEach(input => input.required = Boolean(app))); };
+  document.querySelectorAll<HTMLInputElement>('input[name="objective"]').forEach(input => input.addEventListener('change', syncObjective));
+  syncObjective();
   const form = document.querySelector<HTMLFormElement>('#campaign-form')!;
   const message = document.querySelector<HTMLElement>('#form-message')!;
   const setExpanded = (selector: string, enabled: boolean) => document.querySelector(selector)?.classList.toggle('revealed', enabled);
