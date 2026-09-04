@@ -1,12 +1,15 @@
 import './styles.css';
 import { mountCampaignPage } from './campaign';
 import { mountManageCampaignsPage } from './manage-campaigns';
+import { mountCampaignDetailsPage } from './campaign-details';
 
 const route = window.location.pathname.replace(/\/+$/, '');
 if (route === '/campaigns/create') {
   mountCampaignPage();
 } else if (route === '/campaigns') {
   mountManageCampaignsPage();
+} else if (/^\/campaigns\/\d+$/.test(route)) {
+  mountCampaignDetailsPage(Number(route.split('/').pop()));
 } else {
 
 const icons = {
