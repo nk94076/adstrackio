@@ -1,8 +1,12 @@
 import './styles.css';
 import { mountCampaignPage } from './campaign';
+import { mountManageCampaignsPage } from './manage-campaigns';
 
-if (window.location.pathname.replace(/\/+$/, '') === '/campaigns/create') {
+const route = window.location.pathname.replace(/\/+$/, '');
+if (route === '/campaigns/create') {
   mountCampaignPage();
+} else if (route === '/campaigns') {
+  mountManageCampaignsPage();
 } else {
 
 const icons = {
