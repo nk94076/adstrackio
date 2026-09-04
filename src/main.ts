@@ -1,4 +1,9 @@
 import './styles.css';
+import { mountCampaignPage } from './campaign';
+
+if (window.location.pathname.replace(/\/+$/, '') === '/campaigns/create') {
+  mountCampaignPage();
+} else {
 
 const icons = {
   mail: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 6.5h17v11h-17z"/><path d="m4 7 8 6 8-6"/></svg>',
@@ -96,3 +101,4 @@ form.addEventListener('submit', (event) => {
   status.textContent = '';
   validate();
 });
+}
