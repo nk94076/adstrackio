@@ -51,7 +51,7 @@
 .campaign-app>.sidebar-scrim[hidden]{display:none!important}
 @media(max-width:1200px){.shared-topbar .shell-demo-badge{display:none}}
 @media(max-width:1050px){
-  .campaign-app .shared-sidebar{box-shadow:12px 0 40px #0e112e40;flex-basis:260px;transform:translateX(-100%);transition:transform .2s;width:260px}
+  .campaign-app .shared-sidebar{box-shadow:none;flex-basis:260px;transform:translateX(-100%);transition:transform .2s;width:260px}
   .campaign-app:has(.shared-sidebar)>.campaign-main{margin-left:0;width:100%}
   .campaign-app:has(.shared-sidebar) .action-bar{left:0}
   .shared-sidebar .sidebar-brand{justify-content:flex-start;margin:0 12px 28px}
@@ -61,7 +61,7 @@
   .shared-sidebar .sidebar-close{background:transparent;border:0;color:#d6d8ed;display:grid;height:32px;padding:7px;place-items:center;position:absolute;right:11px;top:15px;width:32px}
   .shared-sidebar .sidebar-close svg{height:17px;width:17px}
   .shared-topbar .menu-button{display:grid;flex-shrink:0}
-  .nav-open .campaign-app .shared-sidebar{transform:translateX(0)}
+  .nav-open .campaign-app .shared-sidebar{box-shadow:12px 0 40px #0e112e40;transform:translateX(0)}
   .nav-open .campaign-app>.sidebar-scrim{background:#14183073;display:block;inset:0;position:fixed;z-index:29}
   body.nav-open{overflow:hidden}
 }

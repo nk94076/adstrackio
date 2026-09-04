@@ -38,7 +38,7 @@ const escapeHtml = (value: string) => value.replace(/[&<>"']/g, character => ({ 
 const navigation: NavigationItem[] = [
   { label: 'Dashboard', icon: 'grid' },
   { label: 'Campaigns', icon: 'campaign', path: '/campaigns', children: [{ label: 'Manage Campaigns', href: '/campaigns' }, { label: 'Create Campaign', href: '/campaigns/create' }] },
-  { label: 'Advertisers', icon: 'users' },
+  { label: 'Advertisers', icon: 'users', path: '/advertisers', children: [{ label: 'Manage Advertisers', href: '/advertisers' }, { label: 'Create Advertiser', href: '/advertisers/create' }, { label: 'PostBack / Hits', href: '/advertisers/postbacks' }] },
   { label: 'Publishers', icon: 'users', path: '/publishers', children: [{ label: 'Manage Publishers', href: '/publishers' }, { label: 'Create Publisher', href: '/publishers/create' }, { label: 'PostBack / Pixels', href: '/publishers/postbacks' }] },
   { label: 'Tracking', icon: 'link', children: [{ label: 'Tracking Links' }, { label: 'Tracking Domains' }, { label: 'Click Logs' }] },
   { label: 'Conversions', icon: 'chart', children: [{ label: 'Conversions' }, { label: 'Postbacks' }] },
@@ -74,6 +74,9 @@ export function renderAppSidebar(activePath: string): string {
 const quickLinks = [
   { label: 'Manage Campaigns', href: '/campaigns', group: 'Campaigns' },
   { label: 'Create Campaign', href: '/campaigns/create', group: 'Campaigns' },
+  { label: 'Manage Advertisers', href: '/advertisers', group: 'Advertisers' },
+  { label: 'Create Advertiser', href: '/advertisers/create', group: 'Advertisers' },
+  { label: 'PostBack / Hits', href: '/advertisers/postbacks', group: 'Advertisers' },
   { label: 'Manage Publishers', href: '/publishers', group: 'Publishers' },
   { label: 'Create Publisher', href: '/publishers/create', group: 'Publishers' },
   { label: 'PostBack / Pixels', href: '/publishers/postbacks', group: 'Publishers' },
