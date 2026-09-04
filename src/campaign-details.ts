@@ -1,5 +1,6 @@
 import './campaign.css';
 import './campaign-details.css';
+import './campaign-details-polish.css';
 
 export type CampaignDetails = { id:number; title:string; objective:string; visibility:string; advertiser:string; status:string; currency:string; previewUrl:string; url:string; devices:string; os:string; createdAt:string; activatedAt:string; uniqueId:string; trackingLink:string; goals:{goal:string;country:string;region:string;revenue:string;payout:string}[]; notes:string[] };
 const model = (id:number):CampaignDetails => ({id,title:id===1042?'Creo — Always On':'Campaign '+id,objective:'Conversions',visibility:'Public',advertiser:'Northstar Media',status:'Active',currency:'INR',previewUrl:'https://preview.adstrackio.example/campaign',url:'https://destination.example.com/offer',devices:'All devices',os:'All operating systems',createdAt:'September 4, 2026 at 1:10 am',activatedAt:'September 4, 2026 at 1:10 am',uniqueId:'cmp_6a99cd1afc12fc260d093546',trackingLink:`https://track.adstrackio.com/click?campaign_id=${id}&pub_id={publisher_id}`,goals:[{goal:'Default',country:'ALL',region:'ALL',revenue:'₹ 1.25',payout:'₹ 1.00'}],notes:[]});
