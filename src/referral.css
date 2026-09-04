@@ -1,0 +1,14 @@
+.referral-intro p { color: #7c869d; font-size: 12px; margin: 0 0 17px; }
+.referral-options { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.referral-option { border: 1px solid #e0e4ee; border-radius: 10px; cursor: pointer; display: flex; gap: 10px; padding: 14px; transition: .16s; }
+.referral-option.selected { background: #f8f8ff; border-color: #b5b0f3; box-shadow: 0 0 0 3px rgba(99, 91, 219, .08); }
+.referral-option input { accent-color: var(--cuba-primary); margin: 3px 0 0; }
+.referral-option span { display: grid; gap: 4px; }
+.referral-option strong { font-size: 12px; }
+.referral-option small { color: #7f899e; font-size: 11px; line-height: 1.35; }
+.referral-custom { display: none; margin-top: 18px; }
+.referral-custom.revealed { display: block; }
+.referral-preview { background: #f3fbfd; border: 1px solid #d9f0f2; border-radius: 8px; display: grid; gap: 4px; margin-top: 15px; padding: 11px 13px; }
+.referral-preview span { color: #5f8993; font-size: 10px; font-weight: 800; text-transform: uppercase; }
+.referral-preview strong { color: #45616e; font-size: 11px; font-weight: 600; }
+@media (max-width: 700px) { .referral-options { grid-template-columns: 1fr; } }
