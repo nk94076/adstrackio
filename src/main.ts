@@ -2,6 +2,7 @@ import './styles.css';
 import { mountCampaignPage } from './campaign';
 import { mountManageCampaignsPage } from './manage-campaigns';
 import { mountCampaignDetailsPage } from './campaign-details';
+import { mountPublisherPage } from './publisher-pages';
 
 document.addEventListener('click', event => {
   const editLink = (event.target as HTMLElement).closest<HTMLAnchorElement>('.details-title a.btn-primary, .detail-actions a.icon-action');
@@ -11,16 +12,12 @@ document.addEventListener('click', event => {
     window.location.assign(`/campaigns/${match[1]}/edit`);
     return;
   }
-  const link = (event.target as HTMLElement).closest<HTMLAnchorElement>('.nav-group > a');
-  const group = link?.parentElement;
-  if (group?.querySelector(':scope > .nav-children')) {
-    event.preventDefault();
-    group.classList.toggle('expanded');
-  }
 });
 
 const route = window.location.pathname.replace(/\/+$/, '');
-if (route === '/campaigns/create') {
+if (route === '/publishers' || route.startsWith('/publishers/')) {
+  mountPublisherPage(route);
+} else if (route === '/campaigns/create') {
   mountCampaignPage();
 } else if (route === '/campaigns') {
   mountManageCampaignsPage();

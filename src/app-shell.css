@@ -1,0 +1,79 @@
+.campaign-app .shared-sidebar{height:100vh;height:100dvh;min-height:0;overflow:hidden;padding:22px 13px 16px;width:260px;z-index:30}
+.shared-sidebar .sidebar-brand{flex-shrink:0;margin:0 12px 28px}
+.shared-sidebar nav{flex:1;min-height:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;padding-right:2px;scrollbar-width:none;-ms-overflow-style:none}
+.shared-sidebar nav::-webkit-scrollbar{display:none}
+.shared-sidebar .sidebar-section-label{color:#8f98bd;font-size:9px;font-weight:800;letter-spacing:1.6px;margin:0 12px 12px}
+.shared-sidebar .nav-group-trigger{align-items:center;background:transparent;border:0;border-radius:9px;color:#b9bfdb;cursor:pointer;display:flex;font:inherit;font-size:13px;font-weight:600;gap:12px;margin:4px 0;padding:11px 12px;text-align:left;transition:background .16s,color .16s;width:100%}
+.shared-sidebar .nav-group-trigger:hover{background:rgba(138,128,255,.13);color:#fff}
+.shared-sidebar .nav-group.active>.nav-group-trigger{background:rgba(138,128,255,.17);box-shadow:inset 3px 0 #78ecee;color:#fff}
+.shared-sidebar .nav-group-trigger>.nav-icon{flex-shrink:0}
+.shared-sidebar .nav-chevron{display:grid;margin-left:auto;transition:transform .18s}
+.shared-sidebar .nav-group.expanded .nav-chevron{transform:rotate(180deg)}
+.shared-sidebar .nav-children{border-left:1px solid rgba(255,255,255,.1);display:grid;gap:2px;margin:3px 0 9px 24px;padding-left:14px}
+.shared-sidebar .nav-children a,.shared-sidebar .nav-children button{background:transparent;border:0;border-radius:5px;color:#a6aed0;display:block;font:inherit;font-size:11px;line-height:1.5;padding:7px 8px;text-align:left;text-decoration:none}
+.shared-sidebar .nav-children a:hover{background:rgba(255,255,255,.06);color:#fff}
+.shared-sidebar .nav-children a.current{background:rgba(109,225,231,.07);color:#8ff1f1;font-weight:700}
+.shared-sidebar .nav-unavailable{cursor:default}
+.shared-sidebar .nav-unavailable:hover{background:transparent;color:#b9bfdb}
+.shared-sidebar .nav-children[hidden],.shared-topbar [hidden]{display:none!important}
+.shared-sidebar .sidebar-bottom{flex-shrink:0;margin-top:15px}
+.shared-sidebar .sidebar-online{background:#45cda6;border:3px solid #28305c;border-radius:50%;height:11px;width:11px}
+.shared-sidebar .nav-group-trigger:focus-visible,.shared-sidebar a:focus-visible,.shared-sidebar .sidebar-close:focus-visible{outline:2px solid #8ff1f1;outline-offset:-2px}
+.campaign-app .shared-topbar{gap:16px;min-width:0;position:sticky;z-index:20}
+.shared-topbar .topbar-left{min-width:0}
+.shared-topbar .crumb{align-items:center;display:flex;flex-wrap:wrap;gap:3px;line-height:1.7;min-width:0}
+.shared-topbar .crumb strong{overflow-wrap:anywhere}
+.shared-topbar .crumb span{margin:0 5px}
+.shared-topbar .topbar-actions{flex-shrink:0;gap:7px}
+.shared-topbar .shell-demo-badge{background:#f3f2ff;border:1px solid #e7e3ff;border-radius:16px;color:#7067c7;font-size:10px;font-weight:700;padding:6px 10px;white-space:nowrap}
+.shared-topbar .shell-icon-button{background:transparent;border:0;border-radius:8px;color:#66718c;display:grid;height:34px;padding:0;place-items:center;width:34px}
+.shared-topbar button{cursor:pointer}
+.shared-topbar .profile-menu{height:36px}
+.shared-topbar button:focus-visible,.shared-topbar a:focus-visible{outline:2px solid #7168e1;outline-offset:3px}
+.shared-topbar .shell-popover{background:#fff;border:1px solid #e5e8f2;border-radius:12px;box-shadow:0 14px 45px #25325524;color:var(--ink);font-size:12px;max-height:70vh;overflow:auto;padding:18px;position:absolute;right:28px;top:62px;width:min(350px,calc(100vw - 30px));z-index:25}
+.shared-topbar .shell-popover h2{font-size:14px;line-height:1.4;margin:0 0 14px}
+.shared-topbar .shell-popover p{color:var(--muted);font-size:12px;line-height:1.65;margin:10px 0 0}
+.shared-topbar .shell-popover>a{align-items:center;border-top:1px solid #edf0f5;color:var(--cuba-primary);display:flex;font-weight:600;justify-content:space-between;margin-top:12px;padding-top:12px;text-decoration:none}
+.shared-topbar .shell-popover-empty{align-items:center;display:flex;flex-direction:column;padding:10px 0 8px;text-align:center}
+.shared-topbar .shell-popover-empty>svg{background:#f2f1ff;border-radius:50%;box-sizing:content-box;color:#7168e1;height:21px;margin-bottom:12px;padding:12px;width:21px}
+.shared-topbar .shell-profile-summary{align-items:center;display:flex;gap:10px}
+.shared-topbar .shell-profile-summary>div{display:grid;gap:4px}
+.shared-topbar .shell-profile-summary small{color:var(--muted);font-size:10px}
+.shared-topbar .shell-search-panel>label{display:block;font-size:12px;font-weight:700;margin-bottom:10px}
+.shared-topbar .shell-search-field{align-items:center;background:#fafbff;border:1px solid #dfe4ed;border-radius:8px;color:var(--muted);display:flex;gap:8px;padding:0 10px}
+.shared-topbar .shell-search-field:focus-within{border-color:#7d72dd;box-shadow:0 0 0 3px #635bdb14}
+.shared-topbar .shell-search-field input{background:transparent;border:0;color:var(--ink);font:inherit;height:40px;min-width:0;outline:none;width:100%}
+.shared-topbar .shell-search-results{display:grid;gap:4px;margin-top:10px}
+.shared-topbar .shell-search-results>a{border-radius:6px;color:var(--ink);display:flex;font-size:12px;gap:8px;justify-content:space-between;padding:10px 8px;text-decoration:none}
+.shared-topbar .shell-search-results>a:hover{background:#f5f4ff;color:var(--cuba-primary)}
+.shared-topbar .shell-search-results small{color:var(--muted);font-size:10px}
+.campaign-app>.sidebar-scrim{border:0;padding:0}
+.campaign-app>.sidebar-scrim[hidden]{display:none!important}
+@media(max-width:1200px){.shared-topbar .shell-demo-badge{display:none}}
+@media(max-width:1050px){
+  .campaign-app .shared-sidebar{box-shadow:12px 0 40px #0e112e40;flex-basis:260px;transform:translateX(-100%);transition:transform .2s;width:260px}
+  .campaign-app:has(.shared-sidebar)>.campaign-main{margin-left:0;width:100%}
+  .campaign-app:has(.shared-sidebar) .action-bar{left:0}
+  .shared-sidebar .sidebar-brand{justify-content:flex-start;margin:0 12px 28px}
+  .shared-sidebar .sidebar-brand strong,.shared-sidebar .nav-chevron{display:block}
+  .shared-sidebar .sidebar-bottom{justify-content:flex-start;padding:16px 8px 1px}
+  .shared-sidebar .sidebar-bottom div{display:grid}
+  .shared-sidebar .sidebar-close{background:transparent;border:0;color:#d6d8ed;display:grid;height:32px;padding:7px;place-items:center;position:absolute;right:11px;top:15px;width:32px}
+  .shared-sidebar .sidebar-close svg{height:17px;width:17px}
+  .shared-topbar .menu-button{display:grid;flex-shrink:0}
+  .nav-open .campaign-app .shared-sidebar{transform:translateX(0)}
+  .nav-open .campaign-app>.sidebar-scrim{background:#14183073;display:block;inset:0;position:fixed;z-index:29}
+  body.nav-open{overflow:hidden}
+}
+@media(max-width:700px){
+  .campaign-app .shared-topbar{gap:10px;height:66px;padding:0 15px}
+  .shared-topbar .topbar-actions{gap:2px}
+  .shared-topbar .topbar-actions>.shell-icon-button{display:grid;height:31px;width:31px}
+  .shared-topbar .topbar-actions>.shell-help-button{display:none}
+  .shared-topbar .profile-menu{margin:0 0 0 4px}
+  .shared-topbar .shell-popover{right:15px;top:58px}
+  .shared-topbar .crumb{font-size:10px;gap:1px}
+  .shared-topbar .crumb span{margin:0 2px}
+  .shared-topbar .menu-button{margin-right:4px;width:29px}
+}
+@media(prefers-reduced-motion:reduce){.campaign-app .shared-sidebar,.shared-sidebar .nav-chevron{transition:none}}

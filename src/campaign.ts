@@ -2,33 +2,9 @@ import './campaign.css';
 import './campaign-bugfix.css';
 import './referral.css';
 
-const icon = (name: string) => {
-  const paths: Record<string, string> = {
-    grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
-    campaign: '<path d="M4 14V7l12-3v13L4 14Z"/><path d="M16 8h2.5a1.5 1.5 0 0 1 0 3H16M6.5 14.6l.8 3.1"/>',
-    users: '<circle cx="9" cy="8" r="3"/><path d="M3.5 19c.6-3.1 2.5-4.8 5.5-4.8s4.9 1.7 5.5 4.8M16 5.5a3 3 0 0 1 0 5.7M17 14.5c2.1.4 3.3 1.8 3.6 4"/>',
-    link: '<path d="M10 13.8a4.2 4.2 0 0 0 5.9.1l2-2a4.2 4.2 0 0 0-5.9-5.9l-1.1 1.1M14 10.2a4.2 4.2 0 0 0-5.9-.1l-2 2A4.2 4.2 0 0 0 12 18l1.1-1.1"/>',
-    chart: '<path d="M4 20V10M10 20V4M16 20v-7M22 20V8"/>',
-    report: '<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v5h5M9 13h6M9 17h6"/>',
-    target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v2M22 12h-2M12 22v-2M2 12h2"/>',
-    image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8" cy="9" r="1.5"/><path d="m5 18 5-5 3 3 2-2 4 4"/>',
-    settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.1 2.1-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5v.2h-3v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1-2.1-2.1.1-.1A1.7 1.7 0 0 0 7 15a1.7 1.7 0 0 0-1.5-1H5.3v-3h.2A1.7 1.7 0 0 0 7 10a1.7 1.7 0 0 0-.3-1.9l-.1-.1 2.1-2.1.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.5v-.2h3v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1 2.1 2.1-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.5 1h.2v3h-.2a1.7 1.7 0 0 0-1.4 1Z"/>',
-    search: '<circle cx="10.5" cy="10.5" r="6"/><path d="m16 16 4.5 4.5"/>',
-    bell: '<path d="M18 10a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 22h4"/>',
-    help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.6 2.6 0 1 1 4.3 2c-1.3 1-1.8 1.5-1.8 3M12 17.5h.01"/>',
-    menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
-    chevron: '<path d="m7 10 5 5 5-5"/>',
-    plus: '<path d="M12 5v14M5 12h14"/>',
-  };
-  return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] ?? paths.grid}</svg>`;
-};
+import { appIcon, bindAppShell, renderAppHeader, renderAppSidebar } from './app-shell';
 
-const nav = [
-  ['Dashboard', 'grid'], ['Campaigns', 'campaign', ['Manage Campaigns', 'Create Campaign']], ['Advertisers', 'users'], ['Publishers', 'users'],
-  ['Tracking', 'link', ['Tracking Links', 'Tracking Domains', 'Click Logs']], ['Conversions', 'chart', ['Conversions', 'Postbacks']],
-  ['Reports', 'report', ['Campaign Report', 'Publisher Report', 'Conversion Report', 'Click Report', 'Daily Report']], ['Analytics', 'chart'], ['Targeting', 'target'], ['Creatives', 'image'], ['Tools', 'settings', ['Macros', 'Bulk Targeting']], ['Settings', 'settings'],
-] as const;
-
+const icon = appIcon;
 const select = (label: string, options: string[], required = false, extra = '') => `<label class="field">${label}${required ? '<b>*</b>' : ''}<select ${extra}>${options.map((o, i) => `<option ${i === 0 ? 'selected' : ''}>${o}</option>`).join('')}</select></label>`;
 const input = (label: string, placeholder = '', required = false, type = 'text', extra = '') => `<label class="field">${label}${required ? '<b>*</b>' : ''}<input type="${type}" placeholder="${placeholder}" ${required ? 'required' : ''} ${extra}/></label>`;
 const toggle = (label: string, checked = false, id = '') => `<label class="switch-row">${label}<span class="switch"><input type="checkbox" ${checked ? 'checked' : ''} ${id ? `id="${id}"` : ''}/><i></i></span></label>`;
@@ -38,9 +14,8 @@ export function mountCampaignPage(editId?: number) {
   document.title = `${editId ? 'Edit' : 'Create'} Campaign · AdstrackIO`;
   document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div class="campaign-app">
-    <aside class="app-sidebar" aria-label="Main navigation"><a class="sidebar-brand" href="/" aria-label="AdstrackIO home"><span class="brand-mark"><i></i><i></i><i></i></span><strong>Adstrack<span>IO</span></strong></a><button class="sidebar-close" type="button" aria-label="Close menu">×</button><nav>${nav.map(([name, iconName, children]) => `<div class="nav-group ${name === 'Campaigns' ? 'active expanded' : ''}"><a href="${name === 'Campaigns' ? '/campaigns' : '#'}"><span class="nav-icon">${icon(iconName)}</span><span>${name}</span>${children ? `<i class="nav-chevron">${icon('chevron')}</i>` : ''}</a>${children ? `<div class="nav-children">${children.map(child => `<a class="${child === 'Create Campaign' ? 'current' : ''}" href="${child === 'Create Campaign' ? '/campaigns/create' : '/campaigns'}">${child}</a>`).join('')}</div>` : ''}</div>`).join('')}</nav><div class="sidebar-bottom"><span class="avatar">AS</span><div><strong>Alex Singh</strong><small>Administrator</small></div><button type="button">•••</button></div></aside>
-    <div class="sidebar-scrim"></div>
-    <main class="campaign-main"><header class="topbar"><div class="topbar-left"><button class="menu-button" type="button" aria-label="Open menu">${icon('menu')}</button><div class="crumb"><a href="#">Campaigns</a><span>/</span><strong>Create Campaign</strong></div></div><div class="topbar-actions"><button type="button" aria-label="Search">${icon('search')}</button><button type="button" aria-label="Notifications" class="has-dot">${icon('bell')}</button><button type="button" aria-label="Help">${icon('help')}</button><button class="profile-menu" type="button"><span class="avatar">AS</span><span>Alex Singh</span>${icon('chevron')}</button></div></header>
+    ${renderAppSidebar(editId ? `/campaigns/${editId}/edit` : '/campaigns/create')}
+    <main class="campaign-main">${renderAppHeader([{ label: 'Campaigns', href: '/campaigns' }, { label: editId ? 'Edit Campaign' : 'Create Campaign' }])}
       <div class="campaign-content"><div class="page-intro"><div><p class="eyebrow">CAMPAIGN MANAGEMENT</p><h1>Create Campaign</h1><p>Configure your offer, conversion flow, targeting and payouts in one place.</p></div><span class="draft-badge">Draft · Not saved</span></div>
       <form id="campaign-form" novalidate>
         ${section('Details', `<div class="objective"><span>Choose an Objective</span><div class="radio-chips">${['Conversions', 'Sale', 'App Installs', 'Leads', 'Impressions', 'Clicks'].map((x, i) => `<label><input name="objective" type="radio" ${i === 0 ? 'checked' : ''}/><i></i>${x}</label>`).join('')}</div></div><div class="form-grid"><div class="full">${select('Advertiser', ['Select an advertiser', 'Northstar Media', 'Orbit Digital', 'Bluebird Commerce'], true, 'required')}</div>${input('Campaign title', 'e.g. Summer acquisition campaign', true)}${input('KPI', 'e.g. CPA under ₹450')}<div class="full rich-field"><span>Description <small>(optional)</small></span><div class="editor"><div class="editor-tools"><button type="button"><b>B</b></button><button type="button"><i>I</i></button><button type="button">⌁</button><button type="button">☷</button><button type="button">↗</button></div><div contenteditable="true" data-placeholder="Describe this campaign for publishers..."></div></div></div><div class="full">${input('Allowed traffic channels', 'Search or select channels')}</div>${input('Preview URL', 'https://your-landing-page.com', false, 'url')}<div>${select('Conversion tracking', ['Server Postback', 'HTTPS IFrame Pixel', 'HTTPS Image Pixel'])}</div><div class="full">${input('Default campaign URL', 'https://your-landing-page.com?click_id={click_id}', true, 'url')}<p class="field-help">The destination URL for campaign traffic. Add optional parameters using the tokens below.</p><div class="tokens"><span>Most used URL tokens</span><div>${['{click_id}', '{campaign_id}', '{publisher_id}', '{source}', '{gclid}', '{fbclid}', '{app_name}', '{ip}', '{p1}', '{p2}'].map(x => `<button type="button" data-token="${x}">${x}</button>`).join('')}<a href="#">See all tokens</a></div></div></div><div class="full"><label class="field">Terms and conditions<textarea placeholder="Add campaign terms publishers must accept..."></textarea></label></div><div>${toggle('Require terms and conditions')}</div>${select('Category', ['Select a category', 'Ecommerce', 'Finance', 'Mobile Apps', 'Lead Generation'])}${select('Status', ['Active', 'Paused', 'Pending', 'Draft'])}<div class="full"><label class="field">Internal note <small>(optional)</small><textarea placeholder="Notes visible only to your team..."></textarea></label></div></div>`)}
@@ -52,6 +27,8 @@ export function mountCampaignPage(editId?: number) {
       <footer class="action-bar"><p id="form-message" role="status"></p><div><button class="btn btn-quiet" type="button" id="cancel-campaign">Cancel</button><button class="btn btn-outline" type="button" id="save-draft">Save Draft</button><button class="btn btn-primary" type="submit" form="campaign-form">${icon('plus')} Create Campaign</button></div></footer>
     </main>
   </div>`;
+
+  bindAppShell();
 
   if (editId) {
     document.querySelector('.page-intro h1')!.textContent = 'Edit Campaign';
@@ -84,8 +61,6 @@ export function mountCampaignPage(editId?: number) {
   referralUrl.addEventListener('input', updateReferral);
   referralParameter.addEventListener('input', updateReferral);
   document.querySelectorAll<HTMLButtonElement>('[data-token]').forEach(button => button.addEventListener('click', () => { const url = form.querySelector<HTMLInputElement>('input[placeholder*="click_id"]')!; url.value += button.dataset.token; url.focus(); }));
-  document.querySelector('.menu-button')?.addEventListener('click', () => document.body.classList.add('nav-open'));
-  document.querySelectorAll('.sidebar-close, .sidebar-scrim').forEach(button => button.addEventListener('click', () => document.body.classList.remove('nav-open')));
   document.querySelector('#save-draft')?.addEventListener('click', () => { message.textContent = 'Draft is held in this browser session and ready for API integration.'; document.querySelector('.draft-badge')!.textContent = 'Draft · Local'; });
   document.querySelector('#cancel-campaign')?.addEventListener('click', () => { form.reset(); message.textContent = 'Changes cleared from the form.'; });
   form.addEventListener('submit', event => { event.preventDefault(); message.textContent = ''; const numberInputs = [...form.querySelectorAll<HTMLInputElement>('input[type="number"]')]; numberInputs.forEach(field => field.setCustomValidity('')); const startHour = numberInputs.find(field => field.placeholder === '00'); const endHour = [...numberInputs].reverse().find(field => field.placeholder === '23'); if (startHour?.value && endHour?.value && Number(startHour.value) >= Number(endHour.value)) endHour.setCustomValidity('End hour must be after start hour.'); const dates = [...form.querySelectorAll<HTMLInputElement>('input[type="datetime-local"], input[type="date"]')].filter(field => field.value); for (let i = 0; i < dates.length - 1; i += 2) if (dates[i].value > dates[i + 1].value) dates[i + 1].setCustomValidity('End date must be after start date.'); if (!form.checkValidity()) { form.classList.add('was-validated'); message.textContent = 'Complete the highlighted required fields and correct date or time ranges before creating this campaign.'; form.querySelector<HTMLElement>(':invalid')?.focus(); return; } const campaignUrl = form.querySelector<HTMLInputElement>('input[placeholder*="click_id"]')!; try { new URL(campaignUrl.value); message.textContent = 'Campaign is ready to create when an API connection is available.'; } catch { campaignUrl.setCustomValidity('Enter a valid campaign URL.'); form.classList.add('was-validated'); campaignUrl.focus(); message.textContent = 'Enter a valid default campaign URL.'; } });
