@@ -62,10 +62,12 @@ function mountAdvertiserDetails(route: string, advertiser: Advertiser): void {
     ['Company', advertiser.company], ['Country', countryName(advertiser.country)], ['Address', advertiser.address],
     ['State', advertiser.state], ['City', advertiser.city], ['Zipcode', advertiser.zipcode],
     ['Tax ID', advertiser.taxId], ['Reference ID', advertiser.referenceId],
+    ['Advertiser Manager', advertiser.advertiserManager], ['Hash ID', advertiser.hashId], ['Notes', advertiser.notes],
     ['Created', dateLabel(advertiser.createdAt)], ['Last Updated', dateLabel(advertiser.updatedAt)],
   ];
   const billingRows: Array<[string, string]> = [
     ['Currency', advertiser.currency], ['Billing Email', advertiser.billingEmail], ['Billing Address', advertiser.billingAddress],
+    ['Billing Country', countryName(advertiser.billingCountry)], ['Payment Terms', advertiser.paymentTerms],
     ['Postback Enabled', advertiser.postbackEnabled ? 'Enabled in preview' : 'Disabled in preview'],
   ];
   const rows = (entries: Array<[string, string]>) => `<dl>${entries.map(([label, value]) => `<div><dt>${label}</dt><dd>${escapeHtml(value || '—')}</dd></div>`).join('')}</dl>`;

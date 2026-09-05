@@ -151,7 +151,71 @@ export function validateAdvertiser(advertiser: Advertiser): Record<string, strin
         errors.postbackUrl = 'Enter a valid URL starting with https:// or http://.'
       }
     }
-    if (!advertiser.postbackValidation.trim()) errors.postbackValidation = 'Choose a postback validation method.'
+    if (!advertiser.postbackValidation.trim()) errors.postbackValidation = 'Enter postback validation details.'
   }
   return errors
+}
+
+const storageKey = 'adstrackio:advertiser-preview:v1'
+const stringFields = ['name', 'email', 'phone', 'company', 'address', 'state', 'city', 'zipcode', 'taxId', 'country', 'referenceId', 'notes', 'advertiserManager', 'hashId', 'currency', 'billingEmail', 'billingAddress', 'billingCountry', 'paymentTerms', 'postbackUrl', 'securityToken', 'postbackValidation', 'createdAt', 'updatedAt'] as const
+const booleanFields = ['advancedSetup', 'postbackEnabled', 'notifyByEmail'] as const
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
+
+function isStoredAdvertiser(value: unknown): value is Advertiser {
+  if (!isObject(value) || !Number.isSafeInteger(value.id) || (value.id as number) <= 0) return false
+  if (!stringFields.every(field => typeof value[field] === 'string') || !booleanFields.every(field => typeof value[field] === 'boolean')) return false
+  if (!validCountries.has(value.country as string) || !advertiserStatuses.includes(value.status as AdvertiserStatus)) return false
+  const { access, tracking, notifications, activity } = value
+  if (!isObject(access) || typeof access.panel !== 'boolean' || typeof access.api !== 'boolean') return false
+  if (!isObject(tracking) || typeof tracking.conversionTracking !== 'boolean' || typeof tracking.locale !== 'string' || !['Default', '301', '302'].includes(tracking.redirectType as string) || !['image', 'iframe'].includes(tracking.pixelType as string)) return false
+  if (!isObject(notifications) || typeof notifications.email !== 'boolean' || typeof notifications.conversion !== 'boolean') return false
+  return Array.isArray(activity) && activity.every(item => isObject(item) && typeof item.title === 'string' && typeof item.date === 'string')
+}
+
+function copyAdvertiser(advertiser: Advertiser): Advertiser {
+  const copy = createEmptyAdvertiser()
+  copy.id = advertiser.id
+  copy.status = advertiser.status
+  for (const field of stringFields) copy[field] = advertiser[field].trim()
+  for (const field of booleanFields) copy[field] = advertiser[field]
+  copy.access = { panel: advertiser.access.panel, api: advertiser.access.api }
+  copy.tracking = { conversionTracking: advertiser.tracking.conversionTracking, redirectType: advertiser.tracking.redirectType, locale: advertiser.tracking.locale, pixelType: advertiser.tracking.pixelType }
+  copy.notifications = { email: advertiser.notifications.email, conversion: advertiser.notifications.conversion }
+  copy.activity = advertiser.activity.map(item => ({ title: item.title, date: item.date }))
+  return copy
+}
+
+function readStoredAdvertisers(): Advertiser[] {
+  try {
+    const value: unknown = JSON.parse(sessionStorage.getItem(storageKey) || 'null')
+    return isObject(value) && value.version === 1 && Array.isArray(value.advertisers) ? value.advertisers.filter(isStoredAdvertiser).map(copyAdvertiser) : []
+  } catch { return [] }
+}
+
+export function listAdvertiserPreviews(): Advertiser[] {
+  const records = new Map<number, Advertiser>()
+  for (const advertiser of [...demoAdvertisers, ...readStoredAdvertisers()]) records.set(advertiser.id!, copyAdvertiser(advertiser))
+  return [...records.values()].sort((a, b) => a.id! - b.id!)
+}
+
+export function getAdvertiserPreview(id: number): Advertiser | undefined {
+  return listAdvertiserPreviews().find(advertiser => advertiser.id === id)
+}
+
+/** Browser-tab previews only: no requests, delivery, account provisioning or security credentials. */
+export async function storeAdvertiserPreview(advertiser: Advertiser): Promise<void> {
+  if (Object.keys(validateAdvertiser(advertiser)).length) throw new Error('Check the highlighted advertiser fields before saving.')
+  if (advertiser.id !== null && (!Number.isSafeInteger(advertiser.id) || advertiser.id <= 0)) throw new Error('The advertiser preview ID is invalid.')
+  const saved = copyAdvertiser(advertiser)
+  saved.id ??= Math.max(26, ...listAdvertiserPreviews().map(record => record.id!)) + 1
+  saved.securityToken ||= previewToken(saved.id)
+  saved.postbackUrl ||= previewPostbackUrl(saved.id, saved.securityToken)
+  saved.hashId ||= `DEMO-ADV-${saved.id}`
+  saved.createdAt ||= new Date().toISOString()
+  saved.updatedAt = new Date().toISOString()
+  const records = readStoredAdvertisers().filter(record => record.id !== saved.id)
+  records.push(saved)
+  try { sessionStorage.setItem(storageKey, JSON.stringify({ version: 1, advertisers: records })) }
+  catch { throw new Error('The advertiser preview could not be saved. Browser session storage is unavailable or full.') }
+  Object.assign(advertiser, saved)
 }

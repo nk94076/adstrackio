@@ -3,6 +3,7 @@ import { mountCampaignPage } from './campaign';
 import { mountManageCampaignsPage } from './manage-campaigns';
 import { mountCampaignDetailsPage } from './campaign-details';
 import { mountPublisherPage } from './publisher-pages';
+import { mountAdvertiserPage } from './advertiser-pages';
 
 document.addEventListener('click', event => {
   const editLink = (event.target as HTMLElement).closest<HTMLAnchorElement>('.details-title a.btn-primary, .detail-actions a.icon-action');
@@ -15,7 +16,9 @@ document.addEventListener('click', event => {
 });
 
 const route = window.location.pathname.replace(/\/+$/, '');
-if (route === '/publishers' || route.startsWith('/publishers/')) {
+if (route === '/advertisers' || route.startsWith('/advertisers/')) {
+  mountAdvertiserPage(route);
+} else if (route === '/publishers' || route.startsWith('/publishers/')) {
   mountPublisherPage(route);
 } else if (route === '/campaigns/create') {
   mountCampaignPage();

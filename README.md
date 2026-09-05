@@ -29,11 +29,26 @@ Unknown publisher IDs show a not-found state. Publisher names open details; Edit
 
 No live account, tracking, payout, password, invitation, or access changes are made. SMTP is not configured, so email notification remains disabled. The advanced configuration controls save preview preferences only; hidden advanced fields are not validated. The activity card explicitly shows static demo events.
 
+## Advertiser routes
+
+- `/advertisers` — searchable directory with account-status filtering.
+- `/advertisers/create` — create an advertiser preview.
+- `/advertisers/25` — demo advertiser information.
+- `/advertisers/25/edit` — edit using the same AdvertiserForm as Create.
+- `/advertisers/postbacks` — unconnected PostBack / Hits view, linked to the demo configuration card.
+
+`src/advertiser-form.ts` provides AdvertiserForm, AdvertiserBasicInfo, AdvertiserBusinessInfo, AdvertiserBillingInfo, AdvertiserAdvancedSetup, AdvertiserPostback, AdvertiserNotificationSettings, AdvertiserSummary, AdvertiserActivity and AdvertiserSettings. Publisher and Advertiser fields share `src/account-form-controls.ts`, existing Publisher card/control styles, and the common AppShell. No framework or backend was added.
+
+Advertiser data lives under `adstrackio:advertiser-preview:v1`, independent from Publisher storage. Fictional fixtures use IDs 25 and 26; new local IDs start at 27. PostBack Security Tokens explicitly say `DEMO_ONLY`, and generated sample URLs use `tracking.example.invalid`. They are placeholders, not provisioned credentials or endpoints. Copy uses the clipboard; Debug Postback performs only local URL/configuration checks and sends no requests. Validation text remains plain text and Global Pixel choices do not execute code.
+
+Billing fields, Notes, manager references, and advanced preferences are saved locally. SMTP, real token regeneration, API key generation, account suspension/deletion, and invitations remain unavailable.
+
 ## Checks
 
 ```sh
 npx tsc --noEmit
 node --test tests/publisher-data.test.ts
+node --test tests/advertiser-data.test.ts
 npm run build
 ```
 
